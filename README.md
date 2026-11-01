@@ -8,7 +8,7 @@ The product has two native applications:
 
 AMEGA is intended to work over a trusted home Wi-Fi/LAN without a cloud account or internet connection.
 
-## Project status — discovery hardening 0.2.0
+## Project status — discovery hardening 0.2.1
 
 Both prototype applications have been built successfully in GitHub Actions:
 - Windows x64 self-contained application: [Windows build workflow](https://github.com/sultanxan222222-sudo/AMEGA/actions/runs/41334314970).

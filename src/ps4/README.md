@@ -2,7 +2,7 @@
 
 Native PS4 homebrew receiver prototype for a compatible HEN environment.
 
-## Current receiver prototype 0.2.0
+## Current receiver prototype 0.2.1
 
 - Starts a PS4 SDL2 interface with a Russian-first UI.
 - Supports DualShock 4 navigation (D-pad, Cross, Circle).
