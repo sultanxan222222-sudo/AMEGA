@@ -63,15 +63,23 @@ internal sealed class SenderHost : IAsyncDisposable
 
         await app.StartAsync();
         _app = app;
-
         _cancellation = new CancellationTokenSource();
-        var token = _cancellation.Token;
-        _receiverListener = new UdpClient(AddressFamily.InterNetwork);
-        _receiverListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _receiverListener.Client.Bind(new IPEndPoint(IPAddress.Any, DefaultDiscoveryPort));
 
-        _beaconTask = RunSenderBeaconLoopAsync(token);
-        _receiverListenTask = RunReceiverListenerAsync(_receiverListener, token);
+        try
+        {
+            _receiverListener = new UdpClient(AddressFamily.InterNetwork);
+            _receiverListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _receiverListener.Client.Bind(new IPEndPoint(IPAddress.Any, DefaultDiscoveryPort));
+
+            var token = _cancellation.Token;
+            _beaconTask = RunSenderBeaconLoopAsync(token);
+            _receiverListenTask = RunReceiverListenerAsync(_receiverListener, token);
+        }
+        catch
+        {
+            await StopAsync();
+            throw;
+        }
     }
 
     private async Task RunSenderBeaconLoopAsync(CancellationToken cancellationToken)
