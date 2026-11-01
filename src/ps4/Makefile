@@ -71,13 +71,10 @@ sce_sys/about/right.sprx:
 	mkdir -p sce_sys/about
 	cp $(SDK_DATA)/right.sprx $@
 
-pkg.gp4: eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_module/libc.prx sce_module/libSceFios2.prx sce_sys/about/right.sprx
-	python3 ../../tools/create_gp4.py \
-	  --template "$(SDK_DATA)/template.gp4" \
-	  --content-id "$(CONTENT_ID)" \
-	  --output "$@"
+pkg.gp4:
+	@test -f "$@" || (echo "Missing generated GP4 manifest: run tools/create_gp4.py before building"; exit 1)
 
-AMEGA-PS4.pkg: pkg.gp4
+AMEGA-PS4.pkg: pkg.gp4 eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_module/libc.prx sce_module/libSceFios2.prx sce_sys/about/right.sprx
 	$(PKGTOOL) pkg_build "$<" .
 	cp "$(CONTENT_ID).pkg" "$@"
 
