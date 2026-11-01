@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amega.local/schemas/discovery-v1.schema.json",
+  "title": "AMEGA sender discovery beacon v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "major",
+    "type",
+    "sender_id",
+    "instance_nonce",
+    "http_port",
+    "display_name"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "amega"
+    },
+    "major": {
+      "const": 1
+    },
+    "type": {
+      "const": "sender_announcement"
+    },
+    "sender_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "instance_nonce": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 128,
+      "pattern": "^[A-Fa-f0-9]+$"
+    },
+    "http_port": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48
+    }
+  }
+}
