@@ -10,19 +10,18 @@ AMEGA is intended to work over a trusted home Wi-Fi/LAN without a cloud account 
 
 ## Project status
 
-<blockquote>
-This repository currently contains the project foundation and protocol design. It does **not** yet contain installable Windows or PS4 builds. No transfer or installation flow is claimed to work until it has been implemented and tested on real hardware.
-</blockquote>
+> The repository contains the project foundation and a Windows discovery prototype. The Windows code is being built by GitHub Actions. There is not yet an installable PS4 AMEGA package, and end-to-end transfer has not been validated on real hardware.
 
 ## Design priorities
 
 1. **User approval on both ends.** Nothing transfers or installs silently.
 2. **Integrity first.** Every package is checked with SHA-256 before it is marked complete.
 3. **Resume, do not restart.** Interrupted transfers should continue from verified byte ranges.
-4. **No destructive cleanup.** AMEGA never deletes the source package automatically.
-5. **Separate transfer from installation.** Receiving a PKG and installing it are distinct actions.
-6. **HEN compatibility is explicit.** Installation is provided only through a detected and supported GoldHEN/HEN mechanism; unsupported firmware must fail safely.
-7. **Local-first.** Discovery and transfer stay on the local network.
+4. **HTTP Range correctness.** PS4 package-install workflows can request arbitrary byte ranges; a normal whole-file-only HTTP response is not sufficient.
+5. **No destructive cleanup.** AMEGA never deletes the source package automatically.
+6. **Separate transfer from installation.** Receiving a PKG and installing it are distinct actions.
+7. **HEN compatibility is explicit.** HEN does not automatically mean a separate Remote Package Installer app is installed or running.
+8. **Local-first.** Discovery and transfer stay on the local network.
 
 ## Repository map
 
@@ -30,18 +29,22 @@ This repository currently contains the project foundation and protocol design. I
 - `docs/protocol-v1.md` — discovery and transfer protocol.
 - `docs/security-model.md` — pairing, trust, and safe file handling.
 - `docs/ps4-hen-compatibility.md` — HEN/GoldHEN integration constraints.
+- `docs/open-source-research.md` — reusable references and licensing boundaries.
 - `docs/roadmap.md` — implementation stages and acceptance criteria.
 - `protocol/schemas/` — machine-readable protocol schemas.
 - `src/windows/` — Windows application.
 - `src/ps4/` — PS4 homebrew application.
 
-## Planned first milestone
+## Current Windows prototype
 
-A real end-to-end LAN test:
-1. Windows app starts and advertises itself on the LAN.
-2. PS4 app discovers the PC and displays a pairing/transfer request.
-3. User approves on PS4.
-4. PS4 downloads a selected test file in resumable chunks.
+The first Windows prototype can choose a PKG, calculate SHA-256, announce the PC over UDP, and listen for AMEGA PS4 receiver beacons. It exposes health and offer metadata only; it does not transfer or install files yet.
+
+## Planned first end-to-end milestone
+
+1. Windows app and PS4 app discover one another.
+2. Both sides complete a short-lived pairing confirmation.
+3. User accepts a package on the PS4.
+4. PS4 receives the package with resumable byte ranges.
 5. Both sides verify the final SHA-256 digest.
 6. UI reports success only after verification.
 
