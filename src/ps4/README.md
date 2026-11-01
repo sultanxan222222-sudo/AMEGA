@@ -2,15 +2,18 @@
 
 Native PS4 homebrew receiver prototype for a compatible HEN environment.
 
-## Current receiver prototype 0.1.0
+## Current receiver prototype 0.2.0
 
 - Starts a PS4 SDL2 interface with a Russian-first UI.
 - Supports DualShock 4 navigation (D-pad, Cross, Circle).
-- Broadcasts an AMEGA `receiver_announcement` every three seconds on UDP 38470.
-- Listens for Windows `sender_announcement` beacons on UDP 38470.
+- Listens for Windows `sender_announcement` probes on UDP 38470.
+- Immediately unicasts a nonce-bound `receiver_announcement` reply to the PC on UDP 38472.
+- Uses per-interface directed broadcast for periodic replies after the first PC probe.
 - Shows discovered PCs, their local IP address, and announced HTTP port.
 - Persists a receiver installation ID at `/data/amega_receiver_id.txt`.
 - Expires devices that have not announced themselves for 12 seconds.
+- Explicitly enables `SO_BROADCAST` and logs SDL startup failures to `/data/amega-startup.log`.
+- Tries the accelerated SDL renderer first and the software renderer second; it no longer mixes the renderer API with `SDL_UpdateWindowSurface`.
 
 The OpenOrbis CI workflow successfully generated `AMEGA-PS4.pkg` (6,619,136 bytes). The package has not been installed or tested on a real PS4 Pro yet.
 

@@ -4,6 +4,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +17,8 @@
 
 #include "font_ru.h"
 
-static const int DISCOVERY_PORT = 38470;
+static const int SENDER_DISCOVERY_PORT = 38470;
+static const int RECEIVER_DISCOVERY_PORT = 38472;
 static const int HTTP_PORT = 38471;
 static const int MAX_SENDERS = 8;
 
@@ -33,6 +36,7 @@ static int g_selected = -1;
 static int g_socket = -1;
 static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
+static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
@@ -124,23 +128,51 @@ static int getIntField(const char* json, const char* key)
     return atoi(p);
 }
 
-static void sendAnnouncement()
+static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
 {
-    if (g_socket < 0) return;
-    char payload[512];
+    if (g_socket < 0 || !g_lastSenderNonce[0]) return;
+
+    char payload[640];
     snprintf(payload, sizeof(payload),
         "{\"protocol\":\"amega\",\"major\":1,"
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
-        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.1.0\"}",
-        g_receiverId, g_nonce);
+        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.0\","
+        "\"reply_to_nonce\":\"%s\"}",
+        g_receiverId, g_nonce, g_lastSenderNonce);
 
-    sockaddr_in target = {};
-    target.sin_family = AF_INET;
-    target.sin_port = htons(DISCOVERY_PORT);
-    target.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    sendto(g_socket, payload, strlen(payload), 0,
-        reinterpret_cast<sockaddr*>(&target), sizeof(target));
+    if (unicastTarget) {
+        sockaddr_in target = *unicastTarget;
+        target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+        sendto(g_socket, payload, strlen(payload), 0,
+            reinterpret_cast<sockaddr*>(&target), sizeof(target));
+        return;
+    }
+
+    struct ifaddrs* interfaces = nullptr;
+    bool sent = false;
+    if (getifaddrs(&interfaces) == 0) {
+        for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
+            if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
+                !(item->ifa_flags & IFF_UP) || !(item->ifa_flags & IFF_BROADCAST) ||
+                (item->ifa_flags & IFF_LOOPBACK) || !item->ifa_broadaddr)
+                continue;
+            sockaddr_in target = *reinterpret_cast<sockaddr_in*>(item->ifa_broadaddr);
+            target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+            if (sendto(g_socket, payload, strlen(payload), 0,
+                reinterpret_cast<sockaddr*>(&target), sizeof(target)) >= 0)
+                sent = true;
+        }
+        freeifaddrs(interfaces);
+    }
+    if (!sent) {
+        sockaddr_in target = {};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+        target.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+        sendto(g_socket, payload, strlen(payload), 0,
+            reinterpret_cast<sockaddr*>(&target), sizeof(target));
+    }
 }
 
 static void updateSender(const char* json, const sockaddr_in& from)
@@ -154,8 +186,10 @@ static void updateSender(const char* json, const sockaddr_in& from)
         !getStringField(json, "sender_id", id, sizeof(id)) ||
         !getStringField(json, "display_name", name, sizeof(name)) ||
         !getStringField(json, "instance_nonce", nonce, sizeof(nonce)) ||
-        strlen(nonce) < 32)
+        strlen(nonce) != 32 || strlen(name) == 0 || strlen(name) > 48)
         return;
+    for (size_t i = 0; i < strlen(nonce); ++i)
+        if (!isxdigit((unsigned char)nonce[i])) return;
 
     int port = getIntField(json, "http_port");
     if (port < 1024 || port > 65535) return;
@@ -180,6 +214,11 @@ static void updateSender(const char* json, const sockaddr_in& from)
     entry.httpPort = port;
     entry.lastSeen = SDL_GetTicks();
     entry.used = true;
+    snprintf(g_lastSenderNonce, sizeof(g_lastSenderNonce), "%s", nonce);
+
+    sockaddr_in reply = from;
+    reply.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+    sendAnnouncement(&reply);
 
     if (g_selected < 0) g_selected = slot;
     snprintf(g_status, sizeof(g_status), "НАЙДЕН КОМПЬЮТЕР: %s", name);
@@ -189,7 +228,7 @@ static void pollNetwork()
 {
     const Uint32 now = SDL_GetTicks();
     if (now - g_lastBeacon >= 3000) {
-        sendAnnouncement();
+        sendAnnouncement(nullptr);
         g_lastBeacon = now;
     }
 
@@ -227,13 +266,18 @@ static void openDiscoverySocket()
     }
 
     int yes = 1;
-    setsockopt(g_socket, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+    if (setsockopt(g_socket, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes)) != 0) {
+        snprintf(g_status, sizeof(g_status), "ОШИБКА BROADCAST: %d", errno);
+        close(g_socket);
+        g_socket = -1;
+        return;
+    }
     setsockopt(g_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     sockaddr_in local = {};
     local.sin_family = AF_INET;
     local.sin_addr.s_addr = htonl(INADDR_ANY);
-    local.sin_port = htons(DISCOVERY_PORT);
+    local.sin_port = htons(SENDER_DISCOVERY_PORT);
     if (bind(g_socket, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
         snprintf(g_status, sizeof(g_status), "ОШИБКА ПОРТА: %d", errno);
         close(g_socket);
@@ -402,46 +446,101 @@ static void handleController(SDL_Event& event)
     }
 }
 
+static void writeStartupLog(const char* message)
+{
+    FILE* file = fopen("/data/amega-startup.log", "ab");
+    if (!file) return;
+    fprintf(file, "%lld %s\n", (long long)time(nullptr), message ? message : "");
+    fclose(file);
+}
+
 int main(int argc, char* argv[])
 {
+    (void)argc;
+    (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
+    writeStartupLog("AMEGA 0.2.0 startup");
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
-        printf("AMEGA: SDL_Init failed: %s\n", SDL_GetError());
-        for (;;) sceKernelUsleep(1000000);
+        char message[256];
+        snprintf(message, sizeof(message), "SDL_Init failed: %s", SDL_GetError());
+        writeStartupLog(message);
+        printf("AMEGA: %s\n", message);
+        SDL_Quit();
+        return 1;
     }
 
     SDL_Window* window = SDL_CreateWindow(
         "AMEGA PS4 Receiver",
-        SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        1280, 720, 0);
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1280, 720, SDL_WINDOW_SHOWN);
     if (!window) {
-        printf("AMEGA: SDL_CreateWindow failed: %s\n", SDL_GetError());
-        for (;;) sceKernelUsleep(1000000);
+        char message[256];
+        snprintf(message, sizeof(message), "SDL_CreateWindow failed: %s", SDL_GetError());
+        writeStartupLog(message);
+        printf("AMEGA: %s\n", message);
+        SDL_Quit();
+        return 2;
     }
 
-    SDL_Surface* surface = SDL_GetWindowSurface(window);
-    SDL_Renderer* renderer = surface ? SDL_CreateSoftwareRenderer(surface) : nullptr;
+    // Use a single SDL presentation path. The previous build mixed a window
+    // surface/software renderer with SDL_UpdateWindowSurface; this is not
+    // reliable on every PS4 SDL video backend.
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) {
-        printf("AMEGA: renderer failed: %s\n", SDL_GetError());
-        for (;;) sceKernelUsleep(1000000);
+        char message[256];
+        snprintf(message, sizeof(message), "Accelerated renderer unavailable: %s", SDL_GetError());
+        writeStartupLog(message);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!renderer) {
+        char message[256];
+        snprintf(message, sizeof(message), "SDL renderer creation failed: %s", SDL_GetError());
+        writeStartupLog(message);
+        printf("AMEGA: %s\n", message);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 3;
     }
 
+    SDL_RendererInfo rendererInfo = {};
+    if (SDL_GetRendererInfo(renderer, &rendererInfo) == 0) {
+        char message[256];
+        snprintf(message, sizeof(message), "Renderer: %s",
+            rendererInfo.name ? rendererInfo.name : "unknown");
+        writeStartupLog(message);
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_JoystickEventState(SDL_ENABLE);
     if (SDL_NumJoysticks() > 0) g_controller = SDL_JoystickOpen(0);
+
     loadOrCreateReceiverId();
     openDiscoverySocket();
-    if (g_socket < 0) {
-        // The UI still launches and explains the networking failure.
-    }
+    if (g_socket < 0)
+        writeStartupLog("Discovery socket unavailable; UI remains active");
 
-    for (;;) {
+    writeStartupLog("UI initialized");
+    bool running = true;
+    while (running) {
         pollNetwork();
         SDL_Event event;
-        while (SDL_PollEvent(&event)) handleController(event);
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                running = false;
+                break;
+            }
+            handleController(event);
+        }
         drawUi(renderer);
-        SDL_UpdateWindowSurface(window);
         SDL_Delay(33);
     }
 
+    if (g_socket >= 0) close(g_socket);
+    if (g_controller) SDL_JoystickClose(g_controller);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    writeStartupLog("AMEGA normal exit");
     return 0;
 }

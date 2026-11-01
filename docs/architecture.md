@@ -14,13 +14,13 @@ The network protocol is transport-oriented. The UI and the PS4 installation adap
 
 ## 2. Network topology
 
-The Windows application is the temporary HTTP(S) file host. It announces its presence on the local subnet with a small UDP beacon. The PS4 application listens for those beacons and displays available PCs.
+The Windows application is the temporary HTTP(S) file host. It enumerates active IPv4 adapters and their real subnet masks, sends directed broadcasts plus bounded unicast probes to UDP 38470, and listens for nonce-bound PS4 replies on UDP 38472. Separate ports avoid two wildcard-bound applications competing for the same UDP endpoint. The PS4 immediately unicasts a reply to the observed PC source address.
 
 The beacon contains only discovery metadata: protocol version, sender instance ID, listening port, and a short-lived nonce. It must not contain a file path, package contents, or authentication secret.
 
 After a user chooses a PC and approves a pairing code, the PS4 receiver contacts the PC over HTTP. File bytes are fetched by the PS4, which makes resume support and receiver-side verification straightforward.
 
-Discovery is best-effort: broadcast may be blocked by guest Wi-Fi isolation, VLANs, or router settings. A manual IP/port option is a fallback, not the primary workflow.
+Discovery is layered: directed broadcast first, bounded per-subnet unicast sweep as fallback, then nonce-validated replies. Client isolation, VLAN boundaries, and host firewalls can still prevent peer traffic; subnet scanning cannot bypass those network policy boundaries.
 
 ## 3. Transfer lifecycle
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://amega.local/schemas/receiver-discovery-v1.schema.json",
-  "title": "AMEGA PS4 receiver discovery beacon v1",
+  "title": "AMEGA PS4 receiver discovery reply v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,8 @@
     "receiver_id",
     "instance_nonce",
     "display_name",
-    "receiver_version"
+    "receiver_version",
+    "reply_to_nonce"
   ],
   "properties": {
     "protocol": { "const": "amega" },
@@ -21,10 +22,16 @@
     "instance_nonce": {
       "type": "string",
       "minLength": 32,
-      "maxLength": 128,
-      "pattern": "^[A-Fa-f0-9]+$"
+      "maxLength": 32,
+      "pattern": "^[A-Fa-f0-9]{32}$"
     },
     "display_name": { "type": "string", "minLength": 1, "maxLength": 48 },
-    "receiver_version": { "type": "string", "minLength": 1, "maxLength": 32 }
+    "receiver_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "reply_to_nonce": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 32,
+      "pattern": "^[A-Fa-f0-9]{32}$"
+    }
   }
 }

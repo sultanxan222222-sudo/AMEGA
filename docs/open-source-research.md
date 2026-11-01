@@ -46,3 +46,19 @@ AMEGA will keep three layers separate:
 3. **GoldHEN-specific installation adapter:** capabilities must be detected and tested. HEN presence alone is not proof of a particular API, payload, or port.
 
 No installation adapter may report success based only on opening a TCP connection or sending a request. It must use the platform's actual task/result state.
+
+
+## LAN discovery reference: PKG Sender / LoopDPI
+
+Repository: https://github.com/Loopayeh/pkg-sender  
+License: MIT.
+
+The public project demonstrates practical discovery lessons:
+- enumerate active IPv4 adapters and use their actual subnet masks instead of assuming every network is /24;
+- send discovery beacons first, then use a bounded subnet sweep when broadcasts are not heard;
+- merge and de-duplicate device responses;
+- distinguish an open TCP port from an application that actually answers its protocol.
+
+AMEGA adopts these architectural lessons in an independent protocol implementation: per-adapter directed broadcasts, a bounded unicast UDP sweep, and a nonce-correlated PS4 reply on a separate port. AMEGA does not copy LoopDPI source code or use its receiver protocol. Its PS4/PS5 service ports and APIs are a different compatibility target.
+
+The original flatz Remote Package Installer documentation confirms that RPI is a separate service on TCP 12800 and that installation is an HTTP POST carrying a package URL. AMEGA discovery does not infer that RPI is installed merely because a PS4 responds to AMEGA UDP; RPI/GoldHEN installation capability remains a separate integration stage.

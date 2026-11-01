@@ -160,7 +160,7 @@ internal sealed class MainForm : Form
             _deviceExpiryTimer.Start();
             _stopButton.Enabled = true;
             _statusLabel.Text = $"ПК объявлен в сети. Ожидаю PS4 на UDP-порту {SenderHost.DefaultDiscoveryPort}.";
-            _stageLabel.Text = "Обнаружение работает. Передача файлов будет открыта после pairing и защищённого канала.";
+            _stageLabel.Text = $"Сеть: {_sender.NetworkSummary}. Directed broadcast и резервный поиск по адресам подсети активны.";
         }
         catch (Exception ex)
         {

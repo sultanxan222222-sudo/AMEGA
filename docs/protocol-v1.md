@@ -4,7 +4,7 @@ Status: design baseline. Implementations must validate every field and reject un
 
 ## 1. Transport
 
-- Discovery: UDP IPv4 broadcast on the configured AMEGA discovery port.
+- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472. The distinct ports avoid competing wildcard binds.
 - Control and data: HTTP over the local network in the first development milestone.
 - Production hardening: authenticated HTTPS or an authenticated encrypted session established during pairing. Plain HTTP must not be treated as secure on untrusted networks.
 - All messages are UTF-8 JSON unless the endpoint explicitly serves binary file data.
@@ -14,14 +14,15 @@ Initial development defaults: UDP 38470 and HTTP 38471. These are configurable i
 
 ## 2. Bidirectional discovery
 
-Both applications announce themselves on the local subnet:
+Discovery is a challenge/reply exchange:
 
-- Windows sends `sender_announcement` beacons matching `protocol/schemas/discovery-v1.schema.json`.
-- PS4 sends `receiver_announcement` beacons matching `protocol/schemas/receiver-discovery-v1.schema.json`.
+- Windows sends `sender_announcement` beacons to PS4 UDP 38470, using each active adapter's actual IPv4 subnet broadcast address. It also performs a bounded unicast sweep of each subnet every 15 seconds as a fallback when an access point drops broadcasts.
+- PS4 listens on UDP 38470 and immediately replies to the sender's observed source IP at Windows UDP 38472. The reply matches `protocol/schemas/receiver-discovery-v1.schema.json` and echoes the active PC `instance_nonce` in `reply_to_nonce`.
+- Windows accepts only a response with the current process nonce, a valid receiver UUID, a 32-character hexadecimal instance nonce, and bounded display fields. This rejects stale replies from a previous PC process.
 
 The Windows app listens for receiver announcements; the PS4 app listens for sender announcements. Each beacon includes a random installation ID, a fresh per-launch nonce, protocol major version, and display name. The sender announcement also includes the active HTTP port.
 
-Discovery is unauthenticated and grants no access. It contains no file path, package contents, authentication secret, or hardware serial. Networks with client isolation, guest Wi-Fi, or VLAN separation may block broadcast; manual IP entry may be offered as a fallback.
+Discovery is unauthenticated and grants no access. It contains no file path, package contents, authentication secret, or hardware serial. Networks with client isolation, guest Wi-Fi, VLAN separation, or host firewalls may block peer traffic. A bounded subnet sweep can bypass broadcast suppression, but it cannot bypass client isolation or firewall rules.
 
 ## 3. Pairing and offer
 
