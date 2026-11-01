@@ -17,6 +17,7 @@ internal sealed class MainForm : Form
     private readonly ListBox _devicesList = new();
     private readonly Dictionary<string, DiscoveredReceiver> _devices = new();
     private readonly SenderHost _sender = new();
+    private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
     private string? _selectedFile;
     private string? _selectedHash;
 
@@ -83,6 +84,7 @@ internal sealed class MainForm : Form
         ]);
 
         _sender.ReceiverDiscovered += ReceiverWasDiscovered;
+        _deviceExpiryTimer.Tick += (_, _) => RemoveExpiredDevices();
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
         _stopButton.Click += StopClicked;
@@ -155,6 +157,7 @@ internal sealed class MainForm : Form
             _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
             _statusLabel.Text = "Запускаю двустороннее сетевое обнаружение…";
             await _sender.StartAsync(_selectedFile, _selectedHash);
+            _deviceExpiryTimer.Start();
             _stopButton.Enabled = true;
             _statusLabel.Text = $"ПК объявлен в сети. Ожидаю PS4 на UDP-порту {SenderHost.DefaultDiscoveryPort}.";
             _stageLabel.Text = "Обнаружение работает. Передача файлов будет открыта после pairing и защищённого канала.";
@@ -172,17 +175,35 @@ internal sealed class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         try
         {
-            BeginInvoke(() =>
+            BeginInvoke(new Action(() =>
             {
                 _devices[receiver.ReceiverId] = receiver;
-                _devicesList.Items.Clear();
-                foreach (var device in _devices.Values.OrderBy(x => x.DisplayName))
-                    _devicesList.Items.Add(device.DisplayLabel);
-
+                RefreshDeviceList();
                 _statusLabel.Text = $"Найдена приставка: {receiver.DisplayName} ({receiver.IpAddress}).";
-            });
+            }));
         }
         catch (InvalidOperationException) { }
+    }
+
+    private void RemoveExpiredDevices()
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddSeconds(-12);
+        foreach (var id in _devices.Where(pair => pair.Value.LastSeen < cutoff).Select(pair => pair.Key).ToArray())
+            _devices.Remove(id);
+        RefreshDeviceList();
+    }
+
+    private void RefreshDeviceList()
+    {
+        _devicesList.Items.Clear();
+        if (_devices.Count == 0)
+        {
+            _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
+            return;
+        }
+
+        foreach (var device in _devices.Values.OrderBy(x => x.DisplayName))
+            _devicesList.Items.Add(device.DisplayLabel);
     }
 
     private async void StopClicked(object? sender, EventArgs e)
@@ -199,6 +220,7 @@ internal sealed class MainForm : Form
 
     private async Task StopSenderAsync()
     {
+        _deviceExpiryTimer.Stop();
         try { await _sender.StopAsync(); }
         catch (Exception ex) { _statusLabel.Text = $"Ошибка остановки: {ex.Message}"; }
         _stopButton.Enabled = false;
