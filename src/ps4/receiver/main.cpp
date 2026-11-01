@@ -1,4 +1,5 @@
 #include <SDL2/SDL.h>
+#include <orbis/libkernel.h>
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -23,7 +24,7 @@ struct SenderEntry {
     char name[64];
     char ip[INET_ADDRSTRLEN];
     int httpPort;
-    uint64_t lastSeen;
+    Uint32 lastSeen;
     bool used;
 };
 
@@ -33,7 +34,8 @@ static int g_socket = -1;
 static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
-static uint64_t g_lastBeacon = 0;
+static Uint32 g_lastBeacon = 0;
+static SDL_Joystick* g_controller = nullptr;
 
 static bool randomBytes(unsigned char* out, size_t size)
 {
@@ -176,7 +178,7 @@ static void updateSender(const char* json, const sockaddr_in& from)
     snprintf(entry.name, sizeof(entry.name), "%s", name);
     snprintf(entry.ip, sizeof(entry.ip), "%s", ip);
     entry.httpPort = port;
-    entry.lastSeen = SDL_GetTicks64();
+    entry.lastSeen = SDL_GetTicks();
     entry.used = true;
 
     if (g_selected < 0) g_selected = slot;
@@ -185,7 +187,7 @@ static void updateSender(const char* json, const sockaddr_in& from)
 
 static void pollNetwork()
 {
-    const uint64_t now = SDL_GetTicks64();
+    const Uint32 now = SDL_GetTicks();
     if (now - g_lastBeacon >= 3000) {
         sendAnnouncement();
         g_lastBeacon = now;
@@ -411,7 +413,8 @@ int main(int argc, char* argv[])
         for (;;) sceKernelUsleep(1000000);
     }
 
-    if (SDL_NumJoysticks() > 0) SDL_JoystickOpen(0);
+    SDL_JoystickEventState(SDL_ENABLE);
+    if (SDL_NumJoysticks() > 0) g_controller = SDL_JoystickOpen(0);
     loadOrCreateReceiverId();
     openDiscoverySocket();
     if (g_socket < 0) {
