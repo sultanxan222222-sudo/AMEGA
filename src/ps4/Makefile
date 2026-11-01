@@ -56,7 +56,7 @@ sce_sys/param.sfo: Makefile
 	$(PKGTOOL) sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
 	$(PKGTOOL) sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(APP_VERSION)'
 
-AMEGA-PS4.pkg: eboot.bin sce_sys/param.sfo sce_sys/icon0.png
+AMEGA-PS4.pkg: eboot.bin sce_sys/param.sfo
 	$(CREATE_GP4) -out pkg.gp4 --content-id=$(CONTENT_ID) --files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png"
 	$(PKGTOOL) pkg_build pkg.gp4 .
 	cp $(CONTENT_ID).pkg $@
