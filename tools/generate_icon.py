@@ -7,9 +7,9 @@ import sys
 import zlib
 
 W = H = 512
-BG = (18, 21, 27, 255)
-GOLD = (245, 190, 55, 255)
-WHITE = (235, 239, 245, 255)
+BG = (18, 21, 27)
+GOLD = (245, 190, 55)
+WHITE = (235, 239, 245)
 
 def inside_round_rect(x, y, left, top, right, bottom, radius):
     if x < left or x >= right or y < top or y >= bottom:
@@ -45,7 +45,7 @@ def main():
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    pixels = bytearray(W * H * 4)
+    pixels = bytearray(W * H * 3)
     outer = (28, 28, 484, 484)
     inner = (39, 39, 473, 473)
     main_a = [(256, 78), (392, 382), (326, 382), (256, 218), (186, 382), (120, 382)]
@@ -58,7 +58,7 @@ def main():
             elif inside_polygon(x, y, main_a) and not inside_polygon(x, y, cutout):
                 color = GOLD
             idx = (y * W + x) * 4
-            pixels[idx:idx+4] = bytes(color)
+            pixels[idx:idx+3] = bytes(color)
 
     # Compact AMEGA wordmark, rendered as a tiny custom pixel font.
     scale, gap = 7, 1
@@ -75,16 +75,16 @@ def main():
                         for sx in range(scale):
                             x, y = gx + col * scale + sx, start_y + row * scale + sy
                             idx = (y * W + x) * 4
-                            pixels[idx:idx+4] = bytes(WHITE)
+                            pixels[idx:idx+3] = bytes(WHITE)
 
     raw = bytearray()
-    stride = W * 4
+    stride = W * 3
     for y in range(H):
         raw.append(0)
         raw.extend(pixels[y * stride:(y + 1) * stride])
 
     png = bytearray(b"\x89PNG\r\n\x1a\n")
-    png.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)))
+    png.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)))
     png.extend(png_chunk(b"IDAT", zlib.compress(bytes(raw), 9)))
     png.extend(png_chunk(b"IEND", b""))
     with open(path, "wb") as out:
