@@ -1,0 +1,43 @@
+# Build output
+bin/
+obj/
+out/
+artifacts/
+build/
+dist/
+
+# IDE and local settings
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Native build output
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+*.elf
+*.pkg
+
+# Local test packages and secrets
+*.pkg.tmp
+*.part
+*.resume
+.env
+.env.*
+!.env.example
+secrets/
+local.config.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
