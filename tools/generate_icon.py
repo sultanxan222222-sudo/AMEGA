@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate the AMEGA PS4 homebrew icon using only Python's standard library."""
 import math
+import os
 import struct
 import sys
 import zlib
@@ -41,6 +42,9 @@ def png_chunk(kind, data):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "sce_sys/icon0.png"
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     pixels = bytearray(W * H * 4)
     outer = (28, 28, 484, 484)
     inner = (39, 39, 473, 473)
