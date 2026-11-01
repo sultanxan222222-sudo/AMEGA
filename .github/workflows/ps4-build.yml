@@ -33,6 +33,12 @@ jobs:
             find "$OO_PS4_TOOLCHAIN" -maxdepth 4 -type f | grep -E "(create-fself|create-gp4|PkgTool.Core|create-eboot)" | head -50 || true
             echo "--- bin/linux ---"
             ls -lah "$OO_PS4_TOOLCHAIN/bin/linux" || true
+            echo "--- bin/data ---"
+            find "$OO_PS4_TOOLCHAIN/bin/data" -maxdepth 3 -type f -printf "%p %s bytes\\n" | sort | head -100 || true
+            echo "--- GP4 template ---"
+            sed -n "1,240p" "$OO_PS4_TOOLCHAIN/bin/data/template.gp4" 2>/dev/null || true
+            echo "--- SDK scripts ---"
+            find "$OO_PS4_TOOLCHAIN/scripts" -maxdepth 2 -type f | sort | head -80 || true
           '
 
       - name: Build AMEGA PS4 PKG with OpenOrbis
