@@ -1,13 +1,30 @@
 # AMEGA for PS4
 
-Planned implementation: PS4 homebrew receiver for a compatible HEN environment.
+Native PS4 homebrew receiver prototype for a compatible HEN environment.
 
-Responsibilities:
-- listen for AMEGA sender announcements;
-- display discovered PCs and pairing state;
-- show file offer metadata and require explicit acceptance;
-- check free space and receive into a staging directory;
-- support resume and SHA-256 verification;
-- expose a separate installation action only when a supported HEN adapter is detected.
+## Current receiver prototype
 
-The receiver must remain useful for safe file reception even when package-install capability is unavailable. Firmware and GoldHEN compatibility must be measured on real hardware.
+- Starts a PS4 SDL2 interface with a Russian-first UI.
+- Supports DualShock 4 navigation (D-pad, Cross, Circle).
+- Broadcasts an AMEGA `receiver_announcement` every three seconds on UDP 38470.
+- Listens for Windows `sender_announcement` beacons on UDP 38470.
+- Shows discovered PCs, their local IP address, and announced HTTP port.
+- Persists a receiver installation ID at `/data/amega_receiver_id.txt`.
+- Expires devices that have not announced themselves for 12 seconds.
+
+The Cross button selects a discovered PC. It does not claim to receive a package yet. Pairing, explicit transfer acceptance, resumable download, SHA-256 verification, and installation are later implementation stages.
+
+## Build
+
+Use the OpenOrbis PS4 Toolchain with SDL2 support. The GitHub Actions workflow uses the OpenOrbis toolchain container.
+
+Locally, with the toolchain installed:
+
+```bash
+export OO_PS4_TOOLCHAIN=/path/to/OpenOrbis
+make clean all
+```
+
+Expected output: `AMEGA-PS4.pkg`.
+
+A successful build only proves that the package was produced. It still must be installed and tested on a real PS4 Pro running the target HEN/GoldHEN version. This prototype is for discovery only; it is not yet a game receiver.
