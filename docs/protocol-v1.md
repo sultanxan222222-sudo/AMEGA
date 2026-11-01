@@ -10,22 +10,18 @@ Status: design baseline. Implementations must validate every field and reject un
 - All messages are UTF-8 JSON unless the endpoint explicitly serves binary file data.
 - Maximum discovery datagram: 1,200 bytes.
 
-The discovery port and HTTP port are configuration values, not hard-coded assumptions. The initial defaults will be recorded in the implementation configuration and may be changed to avoid conflicts.
+Initial development defaults: UDP 38470 and HTTP 38471. These are configurable implementation defaults, not protocol constants.
 
-## 2. Discovery beacon
+## 2. Bidirectional discovery
 
-The sender periodically broadcasts a JSON object matching `protocol/schemas/discovery-v1.schema.json`.
+Both applications announce themselves on the local subnet:
 
-Required fields:
-- `protocol`: `"amega"`
-- `major`: `1`
-- `type`: `"sender_announcement"`
-- `sender_id`: stable random installation ID, not a username or hardware serial
-- `instance_nonce`: fresh random value on each app launch
-- `http_port`: active local HTTP port
-- `display_name`: user-editable device label
+- Windows sends `sender_announcement` beacons matching `protocol/schemas/discovery-v1.schema.json`.
+- PS4 sends `receiver_announcement` beacons matching `protocol/schemas/receiver-discovery-v1.schema.json`.
 
-Beacon data is unauthenticated discovery data. It must never grant access to a file.
+The Windows app listens for receiver announcements; the PS4 app listens for sender announcements. Each beacon includes a random installation ID, a fresh per-launch nonce, protocol major version, and display name. The sender announcement also includes the active HTTP port.
+
+Discovery is unauthenticated and grants no access. It contains no file path, package contents, authentication secret, or hardware serial. Networks with client isolation, guest Wi-Fi, or VLAN separation may block broadcast; manual IP entry may be offered as a fallback.
 
 ## 3. Pairing and offer
 
