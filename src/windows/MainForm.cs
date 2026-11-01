@@ -159,7 +159,7 @@ internal sealed class MainForm : Form
             await _sender.StartAsync(_selectedFile, _selectedHash);
             _deviceExpiryTimer.Start();
             _stopButton.Enabled = true;
-            _statusLabel.Text = $"ПК объявлен в сети. Ожидаю PS4 на UDP-порту {SenderHost.DefaultDiscoveryPort}.";
+            _statusLabel.Text = $"ПК отправляет запросы на UDP {SenderHost.SenderDiscoveryPort} и ждёт ответы на UDP {SenderHost.ReceiverDiscoveryPort}.";
             _stageLabel.Text = $"Сеть: {_sender.NetworkSummary}. Directed broadcast и резервный поиск по адресам подсети активны.";
         }
         catch (Exception ex)
