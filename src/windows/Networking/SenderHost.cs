@@ -6,6 +6,7 @@ using AMEGA.Windows.Protocol;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace AMEGA.Windows.Networking;
 
