@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://amega.local/schemas/transfer-offer-v1.schema.json",
+  "title": "AMEGA transfer offer v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "major",
+    "type",
+    "transfer_id",
+    "sender_id",
+    "file_name",
+    "file_size",
+    "file_kind",
+    "sha256",
+    "created_utc"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "amega"
+    },
+    "major": {
+      "const": 1
+    },
+    "type": {
+      "const": "transfer_offer"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sender_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "file_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[^\\\\/:*?\"<>|]+$"
+    },
+    "file_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "file_kind": {
+      "enum": ["pkg", "test_file"]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "created_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
