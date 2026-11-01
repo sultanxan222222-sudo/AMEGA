@@ -1,0 +1,42 @@
+name: PS4 homebrew build
+
+on:
+  push:
+    paths:
+      - "src/ps4/**"
+      - "tools/generate_icon.py"
+      - ".github/workflows/ps4-build.yml"
+  pull_request:
+    paths:
+      - "src/ps4/**"
+      - "tools/generate_icon.py"
+      - ".github/workflows/ps4-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ps4:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate package icon
+        run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
+
+      - name: Build AMEGA PS4 PKG with OpenOrbis
+        run: |
+          docker run --rm --user 0:0 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/src/ps4 \
+            openorbisofficial/toolchain:latest \
+            bash -lc 'make clean all'
+
+      - name: Upload PS4 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AMEGA-PS4-prototype
+          path: src/ps4/AMEGA-PS4.pkg
+          if-no-files-found: error
