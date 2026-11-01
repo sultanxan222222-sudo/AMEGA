@@ -12,6 +12,8 @@ internal sealed class MainForm : Form
     private readonly Label _sizeLabel = new();
     private readonly Label _hashLabel = new();
     private readonly Label _statusLabel = new();
+    private readonly ProgressBar _hashProgress = new();
+    private CancellationTokenSource? _hashCts;
     private readonly Label _stageLabel = new();
     private readonly Label _devicesTitle = new();
     private readonly ListBox _devicesList = new();
@@ -59,27 +61,33 @@ internal sealed class MainForm : Form
         _hashLabel.AutoEllipsis = true;
         _hashLabel.ForeColor = Color.LightSteelBlue;
 
-        _devicesTitle.SetBounds(32, 322, 740, 24);
+        _hashProgress.SetBounds(32, 316, 740, 12);
+        _hashProgress.Minimum = 0;
+        _hashProgress.Maximum = 100;
+        _hashProgress.Value = 0;
+        _hashProgress.Visible = false;
+
+        _devicesTitle.SetBounds(32, 340, 740, 24);
         _devicesTitle.Text = "Найденные приставки:";
         _devicesTitle.ForeColor = Color.Gainsboro;
 
-        _devicesList.SetBounds(32, 351, 740, 82);
+        _devicesList.SetBounds(32, 369, 740, 82);
         _devicesList.BackColor = Color.FromArgb(36, 41, 50);
         _devicesList.ForeColor = Color.White;
         _devicesList.BorderStyle = BorderStyle.FixedSingle;
         _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
 
-        _stageLabel.SetBounds(32, 447, 740, 42);
+        _stageLabel.SetBounds(32, 465, 740, 42);
         _stageLabel.Text = "Этап 1: двустороннее обнаружение в локальной сети.";
         _stageLabel.ForeColor = Color.FromArgb(245, 190, 55);
 
-        _statusLabel.SetBounds(32, 500, 740, 48);
+        _statusLabel.SetBounds(32, 518, 740, 48);
         _statusLabel.Text = "Готово к работе. Выберите PKG-файл.";
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
             title, subtitle, _chooseButton, _startButton, _stopButton,
-            _fileLabel, _sizeLabel, _hashLabel, _devicesTitle, _devicesList,
+            _fileLabel, _sizeLabel, _hashLabel, _hashProgress, _devicesTitle, _devicesList,
             _stageLabel, _statusLabel
         ]);
 
@@ -113,35 +121,78 @@ internal sealed class MainForm : Form
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
+        var path = dialog.FileName;
+        var info = new FileInfo(path);
+        using var cts = new CancellationTokenSource();
+        _hashCts = cts;
+        _chooseButton.Enabled = false;
+        _startButton.Enabled = false;
+        _stopButton.Enabled = true;
+        _stopButton.Text = "Отменить";
+        _hashProgress.Value = 0;
+        _hashProgress.Visible = true;
+        _fileLabel.Text = $"Файл: {info.Name}";
+        _sizeLabel.Text = $"Размер: {FormatBytes(info.Length)}";
+        _hashLabel.Text = "SHA-256: вычисляется…";
+        _statusLabel.Text = "Проверяю файл. Не закрывай программу — можно отменить.";
+        var progress = new Progress<int>(value =>
+        {
+            _hashProgress.Value = Math.Clamp(value, 0, 100);
+            _statusLabel.Text = $"Вычисляю SHA-256: {value}%";
+        });
+
         try
         {
-            _chooseButton.Enabled = false;
-            _statusLabel.Text = "Проверяю файл и вычисляю SHA-256…";
-            var path = dialog.FileName;
-            var info = new FileInfo(path);
-
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, useAsync: true);
-            var digest = await SHA256.HashDataAsync(stream);
-
+            var digest = await CalculateSha256Async(path, info.Length, progress, cts.Token);
             _selectedFile = path;
             _selectedHash = Convert.ToHexString(digest).ToLowerInvariant();
-            _fileLabel.Text = $"Файл: {info.Name}";
-            _sizeLabel.Text = $"Размер: {FormatBytes(info.Length)}";
             _hashLabel.Text = $"SHA-256: {_selectedHash}";
+            _hashProgress.Value = 100;
             _startButton.Enabled = true;
-            _statusLabel.Text = "Файл проверен. Можно запустить поиск приставки.";
+            _statusLabel.Text = "Файл проверен. Теперь можно нажать «Искать PS4».";
+        }
+        catch (OperationCanceledException)
+        {
+            _selectedFile = null;
+            _selectedHash = null;
+            _hashLabel.Text = "SHA-256: проверка отменена.";
+            _statusLabel.Text = "Проверка отменена. Выбери PKG ещё раз.";
         }
         catch (Exception ex)
         {
             _selectedFile = null;
             _selectedHash = null;
-            _startButton.Enabled = false;
+            _hashLabel.Text = "SHA-256: ошибка.";
             _statusLabel.Text = $"Не удалось прочитать файл: {ex.Message}";
         }
         finally
         {
+            if (ReferenceEquals(_hashCts, cts)) _hashCts = null;
+            _stopButton.Text = "Остановить";
+            _stopButton.Enabled = false;
             _chooseButton.Enabled = true;
         }
+    }
+
+    private static async Task<byte[]> CalculateSha256Async(
+        string path, long fileLength, IProgress<int> progress, CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        await using var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var buffer = new byte[4 * 1024 * 1024];
+        long totalRead = 0;
+        int read;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+        {
+            hash.AppendData(buffer, 0, read);
+            totalRead += read;
+            if (fileLength > 0)
+                progress.Report((int)Math.Min(100L, totalRead * 100L / fileLength));
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return hash.GetHashAndReset();
     }
 
     private async void StartClicked(object? sender, EventArgs e)
@@ -208,6 +259,12 @@ internal sealed class MainForm : Form
 
     private async void StopClicked(object? sender, EventArgs e)
     {
+        if (_hashCts is not null)
+        {
+            _hashCts.Cancel();
+            _statusLabel.Text = "Отменяю проверку файла…";
+            return;
+        }
         await StopSenderAsync();
         _statusLabel.Text = "Сетевой режим остановлен.";
     }
