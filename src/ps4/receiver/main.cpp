@@ -355,26 +355,39 @@ static void drawUi(SDL_Renderer* renderer)
     SDL_RenderPresent(renderer);
 }
 
+static void moveSelection(int direction)
+{
+    if (g_selected < 0) return;
+
+    for (int n = 1; n <= MAX_SENDERS; ++n) {
+        const int candidate = (g_selected + direction * n + MAX_SENDERS * 2) % MAX_SENDERS;
+        if (g_senders[candidate].used) {
+            g_selected = candidate;
+            return;
+        }
+    }
+}
+
 static void handleController(SDL_Event& event)
 {
+    // SDL reports a DualShock D-pad as a hat on most controller mappings.
+    // Keep the button fallback for mappings that expose it as buttons.
+    if (event.type == SDL_JOYHATMOTION && event.jhat.hat == 0) {
+        if (event.jhat.value & SDL_HAT_UP)
+            moveSelection(-1);
+        else if (event.jhat.value & SDL_HAT_DOWN)
+            moveSelection(1);
+        return;
+    }
+
     if (event.type != SDL_JOYBUTTONDOWN) return;
 
     switch (event.jbutton.button) {
-        case 13: // D-pad up
-            if (g_selected >= 0) {
-                for (int n = 1; n <= MAX_SENDERS; ++n) {
-                    int candidate = (g_selected - n + MAX_SENDERS) % MAX_SENDERS;
-                    if (g_senders[candidate].used) { g_selected = candidate; break; }
-                }
-            }
+        case 13: // D-pad up on button-based mappings
+            moveSelection(-1);
             break;
-        case 14: // D-pad down
-            if (g_selected >= 0) {
-                for (int n = 1; n <= MAX_SENDERS; ++n) {
-                    int candidate = (g_selected + n) % MAX_SENDERS;
-                    if (g_senders[candidate].used) { g_selected = candidate; break; }
-                }
-            }
+        case 14: // D-pad down on button-based mappings
+            moveSelection(1);
             break;
         case 0: // Cross: select a discovered PC; transfer remains a separate future step.
             if (g_selected >= 0 && g_senders[g_selected].used)
