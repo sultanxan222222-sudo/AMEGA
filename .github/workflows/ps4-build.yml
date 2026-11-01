@@ -26,6 +26,15 @@ jobs:
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
 
+      - name: Inspect OpenOrbis toolchain layout
+        run: |
+          docker run --rm --user 0:0 openorbisofficial/toolchain:latest bash -lc '
+            echo "OO_PS4_TOOLCHAIN=$OO_PS4_TOOLCHAIN"
+            find "$OO_PS4_TOOLCHAIN" -maxdepth 4 -type f | grep -E "(create-fself|create-gp4|PkgTool.Core|create-eboot)" | head -50 || true
+            echo "--- bin/linux ---"
+            ls -lah "$OO_PS4_TOOLCHAIN/bin/linux" || true
+          '
+
       - name: Build AMEGA PS4 PKG with OpenOrbis
         run: |
           docker run --rm --user 0:0 \
