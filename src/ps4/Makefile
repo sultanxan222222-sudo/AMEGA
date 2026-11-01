@@ -4,7 +4,6 @@ TITLE_ID := AMEG00001
 CONTENT_ID := IV0000-AMEG00001_00-AMEGARECEIVER000
 
 TOOLCHAIN ?= $(OO_PS4_TOOLCHAIN)
-CC := clang
 CXX := clang++
 LD := ld.lld
 PKGTOOL := $(TOOLCHAIN)/bin/linux/PkgTool.Core
@@ -24,9 +23,12 @@ check-toolchain:
 	@test -n "$(TOOLCHAIN)" || (echo "OO_PS4_TOOLCHAIN is not set"; exit 1)
 	@test -x "$(CREATE_FSELF)" || (echo "Missing create-fself in $(TOOLCHAIN)/bin/linux"; exit 1)
 	@test -x "$(CREATE_GP4)" || (echo "Missing create-gp4 in $(TOOLCHAIN)/bin/linux"; exit 1)
+	@test -x "$(PKGTOOL)" || (echo "Missing PkgTool.Core in $(TOOLCHAIN)/bin/linux"; exit 1)
 
-build/amega.o: receiver/main.cpp receiver/font_ru.h
+build:
 	mkdir -p build
+
+build/amega.o: receiver/main.cpp receiver/font_ru.h | build
 	$(CXX) $(CXXFLAGS) -c receiver/main.cpp -o $@
 
 build/amega.elf: build/amega.o
@@ -35,6 +37,10 @@ build/amega.elf: build/amega.o
 
 eboot.bin: build/amega.elf
 	$(CREATE_FSELF) -in=build/amega.elf -out=build/amega.oelf --eboot "eboot.bin" --paid 0x3800000000000011
+
+sce_sys/icon0.png: ../../tools/generate_icon.py
+	mkdir -p sce_sys
+	python3 ../../tools/generate_icon.py $@
 
 sce_sys/param.sfo: Makefile
 	mkdir -p sce_sys
@@ -53,6 +59,7 @@ sce_sys/param.sfo: Makefile
 AMEGA-PS4.pkg: eboot.bin sce_sys/param.sfo sce_sys/icon0.png
 	$(CREATE_GP4) -out pkg.gp4 --content-id=$(CONTENT_ID) --files "eboot.bin sce_sys/param.sfo sce_sys/icon0.png"
 	$(PKGTOOL) pkg_build pkg.gp4 .
+	cp $(CONTENT_ID).pkg $@
 
 clean:
-	rm -rf build eboot.bin pkg.gp4 AMEGA-PS4.pkg sce_sys/param.sfo
+	rm -rf build eboot.bin pkg.gp4 AMEGA-PS4.pkg $(CONTENT_ID).pkg sce_sys/param.sfo sce_sys/icon0.png
