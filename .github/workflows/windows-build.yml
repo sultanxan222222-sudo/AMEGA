@@ -1,0 +1,44 @@
+name: Windows build
+
+on:
+  push:
+    paths:
+      - "src/windows/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "src/windows/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish self-contained Windows x64 app
+        run: >
+          dotnet publish src/windows/AMEGA.Windows.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o artifacts/windows
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AMEGA-Windows-unsigned
+          path: artifacts/windows/
+          if-no-files-found: error
