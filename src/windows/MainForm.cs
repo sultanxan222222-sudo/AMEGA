@@ -13,6 +13,9 @@ internal sealed class MainForm : Form
     private readonly Label _hashLabel = new();
     private readonly Label _statusLabel = new();
     private readonly Label _stageLabel = new();
+    private readonly Label _devicesTitle = new();
+    private readonly ListBox _devicesList = new();
+    private readonly Dictionary<string, DiscoveredReceiver> _devices = new();
     private readonly SenderHost _sender = new();
     private string? _selectedFile;
     private string? _selectedHash;
@@ -21,8 +24,8 @@ internal sealed class MainForm : Form
     {
         Text = "AMEGA — отправка на PS4";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(720, 480);
-        Size = new Size(820, 540);
+        MinimumSize = new Size(740, 600);
+        Size = new Size(820, 650);
         BackColor = Color.FromArgb(24, 27, 33);
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10F);
@@ -44,30 +47,42 @@ internal sealed class MainForm : Form
         };
 
         ConfigureButton(_chooseButton, "Выбрать PKG", 30, 135, 170);
-        ConfigureButton(_startButton, "Запустить поиск PS4", 215, 135, 210);
-        ConfigureButton(_stopButton, "Остановить", 440, 135, 150);
+        ConfigureButton(_startButton, "Искать PS4", 215, 135, 170);
+        ConfigureButton(_stopButton, "Остановить", 400, 135, 150);
         _startButton.Enabled = false;
         _stopButton.Enabled = false;
 
         _fileLabel.SetBounds(32, 205, 740, 28);
-        _sizeLabel.SetBounds(32, 242, 740, 25);
-        _hashLabel.SetBounds(32, 278, 740, 48);
+        _sizeLabel.SetBounds(32, 239, 740, 25);
+        _hashLabel.SetBounds(32, 271, 740, 42);
         _hashLabel.AutoEllipsis = true;
         _hashLabel.ForeColor = Color.LightSteelBlue;
 
-        _stageLabel.SetBounds(32, 350, 740, 45);
-        _stageLabel.Text = "Этап 1: выбор файла и обнаружение компьютера в локальной сети.";
+        _devicesTitle.SetBounds(32, 322, 740, 24);
+        _devicesTitle.Text = "Найденные приставки:";
+        _devicesTitle.ForeColor = Color.Gainsboro;
+
+        _devicesList.SetBounds(32, 351, 740, 82);
+        _devicesList.BackColor = Color.FromArgb(36, 41, 50);
+        _devicesList.ForeColor = Color.White;
+        _devicesList.BorderStyle = BorderStyle.FixedSingle;
+        _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
+
+        _stageLabel.SetBounds(32, 447, 740, 42);
+        _stageLabel.Text = "Этап 1: двустороннее обнаружение в локальной сети.";
         _stageLabel.ForeColor = Color.FromArgb(245, 190, 55);
 
-        _statusLabel.SetBounds(32, 410, 740, 38);
+        _statusLabel.SetBounds(32, 500, 740, 48);
         _statusLabel.Text = "Готово к работе. Выберите PKG-файл.";
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
             title, subtitle, _chooseButton, _startButton, _stopButton,
-            _fileLabel, _sizeLabel, _hashLabel, _stageLabel, _statusLabel
+            _fileLabel, _sizeLabel, _hashLabel, _devicesTitle, _devicesList,
+            _stageLabel, _statusLabel
         ]);
 
+        _sender.ReceiverDiscovered += ReceiverWasDiscovered;
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
         _stopButton.Click += StopClicked;
@@ -94,9 +109,7 @@ internal sealed class MainForm : Form
             CheckFileExists = true,
             Multiselect = false
         };
-
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-            return;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         try
         {
@@ -114,7 +127,7 @@ internal sealed class MainForm : Form
             _sizeLabel.Text = $"Размер: {FormatBytes(info.Length)}";
             _hashLabel.Text = $"SHA-256: {_selectedHash}";
             _startButton.Enabled = true;
-            _statusLabel.Text = "Файл проверен. Можно запустить сетевое обнаружение.";
+            _statusLabel.Text = "Файл проверен. Можно запустить поиск приставки.";
         }
         catch (Exception ex)
         {
@@ -131,18 +144,20 @@ internal sealed class MainForm : Form
 
     private async void StartClicked(object? sender, EventArgs e)
     {
-        if (_selectedFile is null || _selectedHash is null)
-            return;
+        if (_selectedFile is null || _selectedHash is null) return;
 
         try
         {
             _startButton.Enabled = false;
             _chooseButton.Enabled = false;
-            _statusLabel.Text = "Запускаю локальный сервер и объявление в сети…";
+            _devices.Clear();
+            _devicesList.Items.Clear();
+            _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
+            _statusLabel.Text = "Запускаю двустороннее сетевое обнаружение…";
             await _sender.StartAsync(_selectedFile, _selectedHash);
             _stopButton.Enabled = true;
-            _statusLabel.Text = $"AMEGA объявляет себя в локальной сети. HTTP-порт: {SenderHost.DefaultHttpPort}, UDP-порт: {SenderHost.DefaultDiscoveryPort}.";
-            _stageLabel.Text = "Режим обнаружения. Приём и передача файлов будут включены после реализации pairing и защищённого канала.";
+            _statusLabel.Text = $"ПК объявлен в сети. Ожидаю PS4 на UDP-порту {SenderHost.DefaultDiscoveryPort}.";
+            _stageLabel.Text = "Обнаружение работает. Передача файлов будет открыта после pairing и защищённого канала.";
         }
         catch (Exception ex)
         {
@@ -150,6 +165,24 @@ internal sealed class MainForm : Form
             _chooseButton.Enabled = true;
             _statusLabel.Text = $"Не удалось запустить сетевой режим: {ex.Message}";
         }
+    }
+
+    private void ReceiverWasDiscovered(DiscoveredReceiver receiver)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                _devices[receiver.ReceiverId] = receiver;
+                _devicesList.Items.Clear();
+                foreach (var device in _devices.Values.OrderBy(x => x.DisplayName))
+                    _devicesList.Items.Add(device.DisplayLabel);
+
+                _statusLabel.Text = $"Найдена приставка: {receiver.DisplayName} ({receiver.IpAddress}).";
+            });
+        }
+        catch (InvalidOperationException) { }
     }
 
     private async void StopClicked(object? sender, EventArgs e)
