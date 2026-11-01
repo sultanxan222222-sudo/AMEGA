@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Generate the AMEGA PS4 homebrew icon using only Python's standard library."""
-import math
 import os
 import struct
 import sys
@@ -57,7 +56,7 @@ def main():
                 color = GOLD
             elif inside_polygon(x, y, main_a) and not inside_polygon(x, y, cutout):
                 color = GOLD
-            idx = (y * W + x) * 4
+            idx = (y * W + x) * 3
             pixels[idx:idx+3] = bytes(color)
 
     # Compact AMEGA wordmark, rendered as a tiny custom pixel font.
