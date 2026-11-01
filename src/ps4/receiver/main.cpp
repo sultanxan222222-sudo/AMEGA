@@ -358,7 +358,7 @@ static const SDL_Color MUTED = { 143, 154, 170, 255 };
 static const SDL_Color GOLD = { 245, 190, 55, 255 };
 static const SDL_Color GREEN = { 99, 205, 145, 255 };
 
-static void drawUi(SDL_Renderer* renderer)
+static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRenderer)
 {
     SDL_SetRenderDrawColor(renderer, BG.r, BG.g, BG.b, 255);
     SDL_RenderClear(renderer);
@@ -397,6 +397,8 @@ static void drawUi(SDL_Renderer* renderer)
     drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
     drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
+    if (surfaceRenderer)
+        SDL_UpdateWindowSurface(window);
 }
 
 static void moveSelection(int direction)
@@ -454,12 +456,44 @@ static void writeStartupLog(const char* message)
     fclose(file);
 }
 
+static SDL_Renderer* createCompatibleRenderer(SDL_Window* window, bool& surfaceRenderer)
+{
+    surfaceRenderer = false;
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (renderer) return renderer;
+
+    char message[256];
+    snprintf(message, sizeof(message), "Accelerated renderer unavailable: %s", SDL_GetError());
+    writeStartupLog(message);
+
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    if (renderer) return renderer;
+
+    snprintf(message, sizeof(message), "Window software renderer unavailable: %s", SDL_GetError());
+    writeStartupLog(message);
+
+    // Last-resort SDL path for backends that expose a window surface but no
+    // window renderer. Presentation is explicitly updated only in this mode.
+    SDL_Surface* surface = SDL_GetWindowSurface(window);
+    if (surface) {
+        renderer = SDL_CreateSoftwareRenderer(surface);
+        if (renderer) {
+            surfaceRenderer = true;
+            return renderer;
+        }
+    }
+
+    snprintf(message, sizeof(message), "All SDL render paths failed: %s", SDL_GetError());
+    writeStartupLog(message);
+    return nullptr;
+}
+
 int main(int argc, char* argv[])
 {
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.0 startup");
+    writeStartupLog("AMEGA 0.2.1 startup");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         char message[256];
@@ -470,10 +504,19 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    bool fullscreenAttempt = true;
     SDL_Window* window = SDL_CreateWindow(
         "AMEGA PS4 Receiver",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 720, SDL_WINDOW_SHOWN);
+        1280, 720, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    if (!window) {
+        fullscreenAttempt = false;
+        writeStartupLog("Fullscreen desktop window unavailable; trying 1280x720 window");
+        window = SDL_CreateWindow(
+            "AMEGA PS4 Receiver",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720, SDL_WINDOW_SHOWN);
+    }
     if (!window) {
         char message[256];
         snprintf(message, sizeof(message), "SDL_CreateWindow failed: %s", SDL_GetError());
@@ -483,31 +526,37 @@ int main(int argc, char* argv[])
         return 2;
     }
 
-    // Use a single SDL presentation path. The previous build mixed a window
-    // surface/software renderer with SDL_UpdateWindowSurface; this is not
-    // reliable on every PS4 SDL video backend.
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer) {
-        char message[256];
-        snprintf(message, sizeof(message), "Accelerated renderer unavailable: %s", SDL_GetError());
-        writeStartupLog(message);
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    bool surfaceRenderer = false;
+    SDL_Renderer* renderer = createCompatibleRenderer(window, surfaceRenderer);
+    if (!renderer && fullscreenAttempt) {
+        SDL_DestroyWindow(window);
+        writeStartupLog("Renderer unavailable in fullscreen; retrying windowed mode");
+        window = SDL_CreateWindow(
+            "AMEGA PS4 Receiver",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720, SDL_WINDOW_SHOWN);
+        if (window)
+            renderer = createCompatibleRenderer(window, surfaceRenderer);
     }
     if (!renderer) {
         char message[256];
         snprintf(message, sizeof(message), "SDL renderer creation failed: %s", SDL_GetError());
         writeStartupLog(message);
         printf("AMEGA: %s\n", message);
-        SDL_DestroyWindow(window);
+        if (window) SDL_DestroyWindow(window);
         SDL_Quit();
         return 3;
     }
 
+    if (SDL_RenderSetLogicalSize(renderer, 1280, 720) != 0)
+        writeStartupLog("SDL_RenderSetLogicalSize failed; using native renderer dimensions");
+
     SDL_RendererInfo rendererInfo = {};
     if (SDL_GetRendererInfo(renderer, &rendererInfo) == 0) {
         char message[256];
-        snprintf(message, sizeof(message), "Renderer: %s",
-            rendererInfo.name ? rendererInfo.name : "unknown");
+        snprintf(message, sizeof(message), "Renderer: %s%s",
+            rendererInfo.name ? rendererInfo.name : "unknown",
+            surfaceRenderer ? " (window surface fallback)" : "");
         writeStartupLog(message);
     }
 
@@ -532,7 +581,7 @@ int main(int argc, char* argv[])
             }
             handleController(event);
         }
-        drawUi(renderer);
+        drawUi(renderer, window, surfaceRenderer);
         SDL_Delay(33);
     }
 
