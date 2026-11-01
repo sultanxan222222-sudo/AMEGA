@@ -26,13 +26,28 @@ jobs:
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
 
+      - name: Clean previous PS4 build output
+        run: |
+          docker run --rm --user 0:0 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/src/ps4 \
+            openorbisofficial/toolchain:latest \
+            bash -lc 'make clean'
+
+      - name: Generate GP4 manifest
+        run: |
+          python3 tools/create_gp4.py \
+            --template src/ps4/openorbis-template.gp4 \
+            --content-id IV0000-AMEG00001_00-AMEGARECEIVER000 \
+            --output src/ps4/pkg.gp4
+
       - name: Build AMEGA PS4 PKG with OpenOrbis
         run: |
           docker run --rm --user 0:0 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/src/ps4 \
             openorbisofficial/toolchain:latest \
-            bash -lc 'make clean all'
+            bash -lc 'make all'
 
       - name: Upload PS4 package
         uses: actions/upload-artifact@v4
