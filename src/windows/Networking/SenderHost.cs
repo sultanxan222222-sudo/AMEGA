@@ -73,11 +73,12 @@ internal sealed class SenderHost : IAsyncDisposable
             if (!file.Exists)
                 throw new FileNotFoundException("Selected package no longer exists.", selectedFile);
 
+            string normalizedHash = sha256.ToLowerInvariant();
             _offer = new TransferOffer(
-                "amega", 1, "transfer_offer", Guid.NewGuid().ToString("D"),
+                "amega", 1, "transfer_offer", CreateStableTransferId(normalizedHash),
                 _senderId, file.Name, file.Length,
                 Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
-                sha256.ToLowerInvariant(), DateTimeOffset.UtcNow);
+                normalizedHash, DateTimeOffset.UtcNow);
             _offerFilePath = file.FullName;
         }
     }
@@ -370,6 +371,19 @@ internal sealed class SenderHost : IAsyncDisposable
         {
             return Results.Problem("Package could not be opened for reading.", statusCode: 409);
         }
+    }
+
+    private static string CreateStableTransferId(string sha256)
+    {
+        // A content-derived UUID keeps the receiver partial-download key
+        // stable when the PC app restarts and the same PKG is offered again.
+        // The access token remains random and independent.
+        char[] id = sha256.Substring(0, 32).ToLowerInvariant().ToCharArray();
+        id[12] = '5';
+        int variantNibble = Convert.ToInt32(id[16].ToString(), 16) & 0x03;
+        id[16] = "89ab"[variantNibble];
+        string hex = new string(id);
+        return $"{hex[..8]}-{hex[8..12]}-{hex[12..16]}-{hex[16..20]}-{hex[20..32]}";
     }
 
     private static bool FixedTimeTokenEquals(string? supplied, string expected)
