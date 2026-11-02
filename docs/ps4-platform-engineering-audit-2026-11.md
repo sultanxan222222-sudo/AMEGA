@@ -408,3 +408,45 @@ References for this corrected section:
 - Sony PS4 WebKit source snapshots: https://www.playstation.com/en-us/oss/ps4/webkit/
 - OpenOrbis latest releases: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases
 - OpenOrbis current kernel API header: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h
+
+## 11. Native AMEGA transfer implementation and current test evidence
+
+The current development branch now implements a native file-transfer path that is independent of GoldHEN's optional installer services.
+
+### Windows sender
+- Windows explicitly publishes an offer only after the user selects a discovered PS4 and presses Send PKG.
+- The offer includes the package display name, exact byte size, whole-file SHA-256, sender ID and transfer ID. Local absolute paths are not sent.
+- The transfer ID is derived from the normalized whole-file SHA-256 and is stable for the same content across PC application restarts. The 256-bit access token remains random and independent.
+- The accept endpoint binds the token to the selected receiver UUID, fresh nonce, source IP and current PC process nonce.
+- The binary endpoint streams the file from disk and supports HTTP Range/Content-Range and ETag; it does not read the full PKG into RAM.
+
+### PS4 receiver
+- The receiver fetches and validates the offer, then requires an explicit Cross / Accept action.
+- It requests the package through the token-protected HTTP Range route using If-Range with the whole-file SHA-256.
+- It accepts only 206 Partial Content and verifies the start offset, total length, range end and Content-Length before writing.
+- Temporary data and resume metadata are stored under the fixed app-owned directory /data/AMEGA/Download. The remote filename is display-only and is never a destination path.
+- Partial metadata binds the file to transfer ID, expected length and SHA-256. A mismatched metadata record causes the old partial file to be discarded.
+- The receiver checks free space with a 16 MiB reserve, streams with bounded buffers and syncs partial data periodically.
+- A connection interruption or user pause preserves the partial file. Re-accepting the same package after an application restart resumes from the actual partial-file length. The token itself is not stored on disk and must be issued again.
+- After all expected bytes arrive, the PS4 calculates whole-file SHA-256 independently. A mismatch deletes the partial data and metadata; a match is renamed to <transfer_id>.pkg.
+- The sender's original PKG is never deleted. Installation is not started by this transfer flow.
+
+### CI test evidence
+The PS4 workflow runs known-answer SHA-256 tests (empty input, abc, and one million ASCII 'a' bytes), then a local HTTP integration test against the actual downloader module. The mock server deliberately interrupts a 4,194,427-byte file after 600,000 bytes. The test verifies that the next Range request starts at offset 600,000, that the final file is complete, and that the receiver-side digest matches.
+
+Observed successful CI log lines on 2026-11-02:
+- AMEGA SHA-256 self-tests passed
+- AMEGA resumable Range download and receiver SHA-256 test passed
+- Range resume verified: first=0, resumed=600000, total=4194427
+
+This demonstrates the portable transfer module and local mock-server behavior on the CI host. It does **not** establish that a retail PS4 has run the package, that all HEN/firmware combinations support the required filesystem path, or that router/firewall behavior will be identical on every home network.
+
+### Remaining engineering gates
+- Install the latest PKG on the actual PS4 Pro and verify controller input, IP display, firmware readout, staging directory permissions and available-space check.
+- Run a real PC-to-PS4 transfer with a small test file, then a multi-gigabyte PKG.
+- Interrupt power/network at several points and verify resume after both app and console restart.
+- Verify the final saved file by comparing receiver-side SHA-256 with the PC's value.
+- Keep installer integration separate. GoldHEN FTP, standalone RPI, GoldHEN's own Remote Package Install and experimental BinLoader are not prerequisites for native file reception.
+- Add user-visible pairing and authenticated encryption before claiming the protocol is secure on an untrusted LAN; current HTTP control/data are plaintext.
+
+These implementation results supersede earlier roadmap paragraphs that described PS4 offer polling, Accept and native download as future work. The real-console hardware gate and installer-adapter work remain open.
