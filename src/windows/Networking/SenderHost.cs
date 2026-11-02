@@ -143,17 +143,37 @@ internal sealed class SenderHost : IAsyncDisposable
         app.MapMethods("/api/v1/rpi-file", new[] { HttpMethods.Get, HttpMethods.Head },
             (HttpContext context) => ServeRpiFile(context));
 
-        await app.StartAsync();
+        // Kestrel can fail before _app is assigned (for example, when TCP
+        // 38471 is already occupied). Dispose the local host in that path so a
+        // failed Search attempt cannot leave partially initialized resources.
+        try
+        {
+            await app.StartAsync();
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
+
         _app = app;
         _cancellation = new CancellationTokenSource();
 
         try
         {
             var listener = new UdpClient(AddressFamily.InterNetwork);
-            listener.Client.ExclusiveAddressUse = false;
-            listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            listener.Client.Bind(new IPEndPoint(IPAddress.Any, ReceiverDiscoveryPort));
-            _receiverListener = listener;
+            try
+            {
+                listener.Client.ExclusiveAddressUse = false;
+                listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                listener.Client.Bind(new IPEndPoint(IPAddress.Any, ReceiverDiscoveryPort));
+                _receiverListener = listener;
+            }
+            catch
+            {
+                listener.Dispose();
+                throw;
+            }
 
             var token = _cancellation.Token;
 
