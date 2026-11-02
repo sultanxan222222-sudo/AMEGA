@@ -9,5 +9,5 @@ internal sealed record DiscoveredReceiver(
     string InstanceNonce,
     DateTimeOffset LastSeen)
 {
-    public string DisplayLabel => $"{DisplayName} — {IpAddress} — FW {FirmwareVersion}";
+    public string DisplayLabel => $"{DisplayName} | IP {IpAddress} | прошивка {FirmwareVersion} | AMEGA {Version}";
 }
