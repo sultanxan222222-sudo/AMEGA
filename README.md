@@ -29,6 +29,15 @@ The receiver writes temporary data under `/data/AMEGA/Download/<transfer_id>.par
 
 The transfer ID is derived from the PKG's SHA-256, so the same package can resume after the PC application is restarted and offers the same content again. A fresh access token is still required.
 
+## Windows first launch
+
+1. Extract the complete Windows ZIP into one folder; keep the EXE and helper files together.
+2. On a trusted home LAN only, run `Install-AMEGA-Firewall.bat` and approve the Windows administrator prompt. It creates program-scoped inbound rules for UDP 38472 and TCP 38471 on the **Private** profile only. Do not enable these rules on public or guest Wi-Fi.
+3. Launch `AMEGA.exe`. **Искать PS4** is available immediately; selecting a PKG is not required to start discovery.
+4. Start the AMEGA receiver on PS4 and keep both devices on the same local network.
+5. After the PS4 appears, choose a PKG, let SHA-256 finish, select the console and press **Отправить PKG**.
+6. **Остановить** remains available while discovery is active. After stopping, search can be started again.
+
 ## What is not yet complete
 
 - A native AMEGA/GoldHEN installer is not implemented. The optional installer path uses the separate Standalone Remote Package Installer app (RPI) on TCP 12800; RPI must be installed and kept open in the PS4 foreground.
@@ -54,7 +63,9 @@ The PS4 CI workflow currently runs:
 - a local HTTP integration test that deliberately interrupts a 4,194,427-byte transfer after 600,000 bytes, verifies that the receiver resumes from that exact offset, and verifies the final SHA-256;
 - the OpenOrbis PS4 build and PKG packaging.
 
-These tests exercise the portable transfer module on the CI host; the PS4-specific package still needs installation and a real console test.
+The Windows CI workflow also opens the actual WinForms window on a Windows runner and exercises two complete **Search → Stop → Search → Stop** cycles, verifying the enabled state and label of both buttons. It then builds and packages the self-contained Windows x64 app with the private-LAN firewall helper.
+
+These tests confirm the Windows button workflow and compilation on a Windows runner. They do not replace testing on the user's own PC or a real PS4; the PS4-specific package still needs installation and end-to-end console testing.
 
 ## Platform strategy
 
