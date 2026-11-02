@@ -39,6 +39,8 @@ internal sealed class MainForm : Form
     private bool _rpiBusy;
     private bool _rpiInstallActive;
     private bool _rpiInstallRequestInFlight;
+    private bool _startInProgress;
+    private bool _stopRequestedDuringStartup;
     private long? _rpiTaskId;
     private string? _rpiTaskConsoleIp;
     private bool _rpiPollInFlight;
@@ -146,7 +148,8 @@ internal sealed class MainForm : Form
     {
         _chooseButton.Enabled = !_rpiInstallActive && !_rpiBusy;
         _startButton.Enabled = !_isSearching;
-        _stopButton.Enabled = (_isSearching || _hashCts is not null) && !_rpiInstallRequestInFlight;
+        _stopButton.Enabled = (_isSearching || _hashCts is not null) &&
+            !_rpiInstallRequestInFlight && !_stopRequestedDuringStartup;
 
         StyleButton(_chooseButton, enabled: true, Color.FromArgb(55, 64, 78), Color.White);
         StyleButton(_startButton, _startButton.Enabled, Color.FromArgb(245, 190, 55), Color.FromArgb(26, 29, 35));
@@ -305,8 +308,10 @@ internal sealed class MainForm : Form
 
     private async void StartClicked(object? sender, EventArgs e)
     {
-        if (_isSearching) return;
+        if (_isSearching || _startInProgress) return;
 
+        _startInProgress = true;
+        _stopRequestedDuringStartup = false;
         try
         {
             _isSearching = true;
@@ -324,12 +329,26 @@ internal sealed class MainForm : Form
             _offeredReceiverId = null;
             _sender.UpdateOffer(null, null);
             await _sender.StartAsync();
+            _startInProgress = false;
+
+            // Stop can be pressed while Kestrel is starting. In that short
+            // interval SenderHost has not yet finished opening its sockets,
+            // so defer the stop until StartAsync has completed.
+            if (_stopRequestedDuringStartup)
+            {
+                await StopSenderAsync();
+                _statusLabel.Text = "Запуск поиска отменён пользователем.";
+                return;
+            }
+
             _deviceExpiryTimer.Start();
             _statusLabel.Text = "Поиск запущен. Запусти AMEGA на PS4 и оставь обе программы открытыми.";
             _stageLabel.Text = $"Сеть ПК: {_sender.NetworkSummary}. Ожидаю ответ PS4.";
         }
         catch (Exception ex)
         {
+            _startInProgress = false;
+            _stopRequestedDuringStartup = false;
             _isSearching = false;
             _statusLabel.Text = $"Не удалось запустить сетевой режим: {ex.Message}";
             UpdateActionButtons();
@@ -686,6 +705,14 @@ internal sealed class MainForm : Form
 
     private async void StopClicked(object? sender, EventArgs e)
     {
+        if (_startInProgress)
+        {
+            _stopRequestedDuringStartup = true;
+            _statusLabel.Text = "Останавливаю запуск сетевого поиска...";
+            UpdateActionButtons();
+            return;
+        }
+
         if (_rpiInstallActive)
         {
             var choice = MessageBox.Show(this,
@@ -743,6 +770,8 @@ internal sealed class MainForm : Form
     private async Task StopSenderAsync()
     {
         _deviceExpiryTimer.Stop();
+        _startInProgress = false;
+        _stopRequestedDuringStartup = false;
         _isSearching = false;
         try { await _sender.StopAsync(); }
         catch (Exception ex) { _statusLabel.Text = $"Ошибка остановки: {ex.Message}"; }
