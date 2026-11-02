@@ -202,3 +202,79 @@ A successful CI build is not a hardware pass. Do not state universal compatibili
 - KonixDev standalone PS4 PKG Installer and Range/API notes: https://github.com/KonixDev/ps4-pkg-installer
 - flatz PKG installation research and limitations: https://flatz.github.io/
 
+
+
+## 9. Research addendum — later 2026 findings and corrections
+
+### Firmware status: do not collapse exploit, HEN and GoldHEN into one table
+
+Newly checked sources show that the older simplified 13.52 / 14.00 statements require finer distinctions:
+
+- The public upstream GoldHEN release page for v2.4b18 still lists stable/pre-release compatibility only through 11.00. SiSTRo's own v2.4b18.12 beta announcement adds 13.02, 13.04 and 13.50.
+- A community repack/fork named `EEJTek/GoldHEN_v2.4b18.12` lists 13.52, and `ps4aio` specifically selects GoldHEN 2.4b18.11 for 13.52. These are build/repack-specific claims, not proof that the upstream v2.4b18.12 release is universally interchangeable on 13.52.
+- The current Scene-Collective `ps4-hen` repository has commits titled "Add 13.52 support" (2026-06-25) and "Add 14.00 support" (2026-09-19), with `MAX_FW 1400` in its version header. However, its README still describes PS4HEN v2.2.0 BETA as supporting 5.05–12.02. The maximum version macro and a source commit do not by themselves establish a stable end-user release or verified operation on all hardware.
+- ConsoleMods currently describes 14.00 as exploitable through an unstable BD-JB route, with an open-source HEN payload offering fewer features and no GoldHEN support. HenJB's browser-hosted status page currently marks 14.00 unavailable. These community pages are not perfectly synchronized; AMEGA therefore treats 14.00 as experimental/unverified, not a supported installation target.
+- On 13.02, SiSTRo's v2.4b18.12 beta announcement explicitly lists support. Community PS4HEN paths also exist. For this user-facing build, AMEGA must identify what service is actually reachable and must not depend on GoldHEN-only FTP/BinLoader/RPI features to perform basic discovery.
+
+**Corrected AMEGA policy:** firmware information is diagnostic only. Probe the actual receiver and installer APIs. The UI must say "HEN detected / service detected" only when a real health request or known receiver handshake succeeds. Never label a console simply "GoldHEN-compatible" from its IP address or firmware number.
+
+### Official Sony public-source material
+
+Sony maintains an official PS4 Open Source Software page that publishes WebKit source snapshots for multiple historical system software versions, extending through the 13.00 family in the current public index. This is useful for understanding the publicly released browser component and license obligations. It is **not** a public release of Sony's complete PS4 SDK, full system source, private game-installation APIs, or a guarantee that a reverse-engineered homebrew declaration is supported.
+
+### Firmware self-identification for AMEGA
+
+OpenOrbis' public `libkernel.h` declares `sceKernelGetSystemSwVersion(OrbisKernelSwVersion*)`. This gives AMEGA a candidate native firmware-identification route without scraping Settings UI or asking the user to type a version. Before enabling it:
+- verify the exact `OrbisKernelSwVersion` layout from the SDK header version used by the build;
+- confirm the symbol is resolved on the target firmware at runtime;
+- compare its result against the console's System Information screen in a hardware test;
+- if unavailable, show "firmware not detected" rather than guessing.
+
+The current 0.2.2 receiver only displays the local IPv4 address; this native firmware readout is researched but not yet implemented.
+
+### PKG header digest and installer manifest
+
+PS4 PKG format references document a 0x1000-byte package header and a 32-byte `pkg_digest` field at offset `0xFE0`. This is distinct from SHA-256 over the complete file. The newer PKG Sender implementation uses the header digest in the GoldHEN/DPI manifest and reports BGFT error `0x80990033` when the wrong manifest/metadata shape or content type is used.
+
+Consequences for AMEGA:
+- Keep **whole-file SHA-256** for corruption detection and resumable-transfer verification.
+- Parse and validate the PKG header separately for package type/content ID/size and, if an installer protocol requires it, the exact package-header digest.
+- Do not substitute a whole-file SHA-256 for the PKG header digest in a BGFT/DPI manifest.
+- Validate both before offering installation; never trust the filename extension alone.
+
+### New PS4 sender implementation observations
+
+The maintained `Loopayeh/pkg-sender` v1.2.9 source and release notes provide a useful current engineering reference:
+- PS4 mode detection tries RPI's application-level HTTP API at TCP 12800 first, then GoldHEN Payload Server's HTTP status route at 9090, then tests the alternate payload ports 9021 and 9020.
+- Its GoldHEN path builds the DPI/BGFT manifest, derives the PKG header digest, prepares one callback listener, injects exactly once after a successful payload send, and avoids a second injection because that could queue a duplicate install.
+- It uses multi-range HTTP pieces, buffers, and a queue with resume/pause/cancel.
+- The project reports its own measured numbers (~75 MB/s RPI and ~50 MB/s GoldHEN on one gigabit setup). Those are author-reported measurements on their setup, not expected speeds for all PS4 models, disks, routers or firmware.
+- Its root license is MIT. The repository can be used as a source of ideas and, if ever copying code, requires license notice preservation and a file-by-file dependency review. AMEGA currently uses it as a research reference only.
+
+For AMEGA this strengthens the recommended path:
+1. RPI API adapter (TCP 12800, API-level health check) as the preferred optional install mode when RPI is actually running.
+2. GoldHEN Payload Server/BGFT adapter only as an explicitly selected advanced route. GoldHEN's own warning that BinLoader is experimental remains decisive; no auto-injection on discovery.
+3. Native AMEGA transfer as the independent core function.
+4. FTP /data/pkg as optional manual staging, not a requirement.
+5. No direct AppInstUtil/BGFT native installer unless independently proven on device.
+
+### Discovery and LAN caveats
+
+- A UDP beacon should be treated as a hint, not authentication or proof that a device is ready to install.
+- The current PKG Sender uses UDP 12801 for PS4 receiver beacons and 12802 for PC catalog beacons; our AMEGA uses its own versioned ports 38470/38472. Do not mix protocol magic or assume services from ports alone.
+- For networks with broadcast suppression, a directed broadcast per real IPv4 subnet and a bounded TCP fallback can find listening RPI/receiver services. A large-scope sweep must be concurrency-limited and visibly report skipped/truncated ranges.
+- A direct PC-to-PS4 Ethernet cable without a DHCP server requires static addresses on both endpoints; automatic 169.254/16 link-local addressing is unreliable for these setup instructions. This is a fallback setup, not the default user experience.
+
+### Official-source and scene-reference index added
+
+- Sony PS4 open-source software (WebKit snapshots): https://www.playstation.com/en-us/oss/ps4/webkit/
+- PS4HEN current source and commit history: https://github.com/Scene-Collective/ps4-hen
+- SiSTRo GoldHEN upstream releases: https://github.com/GoldHEN/GoldHEN/releases
+- SiSTRo beta release notes: https://ko-fi.com/s/85ea22bd2f
+- Community 13.52 GoldHEN package index: https://github.com/eddieygaming/ps4aio
+- Community 13.52 / 13.50 exploit validation: https://github.com/caziques/PS4
+- Firmware chain status: https://henjb.com/
+- Current LAN PKG sender research: https://github.com/Loopayeh/pkg-sender
+- Original RPI API reference: https://github.com/flatz/ps4_remote_pkg_installer
+- PS4 PKG header layout: https://www.psdevwiki.com/ps4/PKG_files
+
