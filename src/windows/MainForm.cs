@@ -89,28 +89,28 @@ internal sealed class MainForm : Form
         _hashProgress.Visible = false;
 
         _devicesTitle.SetBounds(32, 340, 740, 24);
-        _devicesTitle.Text = "Найденные приставки:";
+        _devicesTitle.Text = "НАЙДЕННЫЕ PS4 — выбери приставку для передачи:";
         _devicesTitle.ForeColor = Color.Gainsboro;
 
-        _devicesList.SetBounds(32, 369, 740, 82);
+        _devicesList.SetBounds(32, 369, 740, 104);
         _devicesList.BackColor = Color.FromArgb(36, 41, 50);
         _devicesList.ForeColor = Color.White;
         _devicesList.BorderStyle = BorderStyle.FixedSingle;
-        _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
+        _devicesList.Items.Add("ОЖИДАЮ ОТВЕТ PS4 — запусти AMEGA на консоли.");
 
-        ConfigureButton(_rpiCheckButton, "Проверить RPI", 32, 465, 180);
-        ConfigureButton(_rpiInstallButton, "Установить через RPI", 225, 465, 220);
-        _rpiStatusLabel.SetBounds(462, 465, 310, 48);
+        ConfigureButton(_rpiCheckButton, "Проверить RPI", 32, 489, 180);
+        ConfigureButton(_rpiInstallButton, "Установить через RPI", 225, 489, 220);
+        _rpiStatusLabel.SetBounds(462, 489, 310, 48);
         _rpiStatusLabel.Text = "RPI: не проверен. Нужен отдельный Standalone RPI на PS4.";
         _rpiStatusLabel.ForeColor = Color.LightSteelBlue;
         _rpiStatusLabel.AutoEllipsis = true;
 
-        _stageLabel.SetBounds(32, 530, 740, 36);
-        _stageLabel.Text = "Поиск PS4 можно запускать независимо от выбора и проверки PKG.";
+        _stageLabel.SetBounds(32, 545, 740, 36);
+        _stageLabel.Text = "ПК ищет PS4. Консоль находится в режиме ожидания и отвечает на запрос.";
         _stageLabel.ForeColor = Color.FromArgb(245, 190, 55);
 
-        _statusLabel.SetBounds(32, 575, 740, 62);
-        _statusLabel.Text = "Готово. Сначала можешь найти PS4 или выбрать PKG.";
+        _statusLabel.SetBounds(32, 590, 740, 62);
+        _statusLabel.Text = "Готово. Нажми «Искать PS4» — консоль ответит автоматически.";
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
@@ -329,8 +329,8 @@ internal sealed class MainForm : Form
             _rpiReadyIp = null;
             _rpiStatusLabel.Text = "RPI: выбери приставку и проверь Standalone RPI.";
             _devicesList.Items.Clear();
-            _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
-            _statusLabel.Text = "Запускаю обнаружение. Выбор PKG и SHA-256 не блокируют поиск.";
+            _devicesList.Items.Add("ПК выполняет поиск. PS4 должна быть включена и ждать подключения…");
+            _statusLabel.Text = "Запускаю поиск с ПК. PS4 не ищет сама, а отвечает на запросы компьютера.";
             UpdateActionButtons();
 
             _offerSent = false;
@@ -356,8 +356,8 @@ internal sealed class MainForm : Form
             }
 
             _deviceExpiryTimer.Start();
-            _statusLabel.Text = "Поиск запущен. Запусти AMEGA на PS4 и оставь обе программы открытыми.";
-            _stageLabel.Text = $"Сеть ПК: {_sender.NetworkSummary}. Ожидаю ответ PS4.";
+            _statusLabel.Text = "ПК ищет PS4. На консоли открыт режим ожидания подключения.";
+            _stageLabel.Text = $"Сеть ПК: {_sender.NetworkSummary}. Активный поиск идёт с компьютера.";
         }
         catch (Exception ex)
         {
@@ -378,7 +378,7 @@ internal sealed class MainForm : Form
             {
                 _devices[receiver.ReceiverId] = receiver;
                 RefreshDeviceList();
-                _statusLabel.Text = $"Найдена приставка: {receiver.DisplayName} ({receiver.IpAddress}).";
+                _statusLabel.Text = $"PS4 найдена и отвечает: {receiver.DisplayName} ({receiver.IpAddress}).";
             }));
         }
         catch (InvalidOperationException) { }
@@ -427,7 +427,7 @@ internal sealed class MainForm : Form
 
         if (ordered.Count == 0)
         {
-            _devicesList.Items.Add("Пока приставки не найдены. Проверь одну Wi-Fi/LAN сеть и брандмауэр.");
+            _devicesList.Items.Add("Пока PS4 не найдена. Проверь одну сеть Wi-Fi/LAN и брандмауэр Windows.");
             _selectedReceiverId = null;
         }
         else
