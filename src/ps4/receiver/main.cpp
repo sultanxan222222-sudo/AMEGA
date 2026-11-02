@@ -1,5 +1,8 @@
 #include <SDL2/SDL.h>
 #include <orbis/libkernel.h>
+#include <orbis/Net.h>
+#include <orbis/NetCtl.h>
+#include <orbis/Sysmodule.h>
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -51,6 +54,9 @@ struct SenderEntry {
 static SenderEntry g_senders[MAX_SENDERS];
 static int g_selected = -1;
 static int g_socket = -1;
+static int g_netPoolId = -1;
+static bool g_netStackReady = false;
+static bool g_netCtlReady = false;
 static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_status[128] = "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ С ПК";
@@ -630,30 +636,115 @@ static void reapDownloadThread()
     }
 }
 
+static bool isUsableLocalIPv4(const char* text)
+{
+    if (!text || !text[0]) return false;
+    struct in_addr address = {};
+    if (inet_pton(AF_INET, text, &address) != 1) return false;
+
+    const uint32_t host = ntohl(address.s_addr);
+    if (host == 0 || host == 0xffffffffu) return false;
+    if ((host >> 24) == 127) return false;                  // loopback
+    if ((host & 0xffff0000u) == 0xa9fe0000u) return false; // link-local
+    if ((host >> 28) == 0xE) return false;                 // multicast
+    return true;
+}
+
+static bool initializePs4Network()
+{
+    writeStartupLog("Initializing PS4 network modules");
+
+    // OpenOrbis exposes Net and NetCtl as internal system modules.
+    // Load them before calling their APIs or creating BSD sockets.
+    const uint32_t netModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
+    const uint32_t ctlModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NETCTL);
+    char moduleLog[160];
+    snprintf(moduleLog, sizeof(moduleLog),
+        "Network module load results: Net=0x%08X NetCtl=0x%08X",
+        netModule, ctlModule);
+    writeStartupLog(moduleLog);
+
+    int32_t result = sceNetInit();
+    if (result < 0 && static_cast<uint32_t>(result) != 0x80410004u) {
+        char message[128];
+        snprintf(message, sizeof(message), "sceNetInit failed: 0x%08X", static_cast<uint32_t>(result));
+        writeStartupLog(message);
+        snprintf(g_localIp, sizeof(g_localIp), "СЕТЬ PS4 НЕ ЗАПУЩЕНА");
+        return false;
+    }
+
+    // The PS4 network pool must exist before the first socket() call.
+    g_netPoolId = sceNetPoolCreate("AMEGA", 256 * 1024, 0);
+    if (g_netPoolId < 0) {
+        char message[128];
+        snprintf(message, sizeof(message), "sceNetPoolCreate failed: 0x%08X",
+            static_cast<uint32_t>(g_netPoolId));
+        writeStartupLog(message);
+        snprintf(g_localIp, sizeof(g_localIp), "ОШИБКА СЕТЕВОГО ПУЛА");
+        return false;
+    }
+
+    result = sceNetCtlInit();
+    if (result == 0 || static_cast<uint32_t>(result) == 0x80412102u) {
+        g_netCtlReady = true;
+    } else {
+        char message[128];
+        snprintf(message, sizeof(message), "sceNetCtlInit failed: 0x%08X", static_cast<uint32_t>(result));
+        writeStartupLog(message);
+    }
+
+    g_netStackReady = true;
+    writeStartupLog("PS4 network stack initialized");
+    return true;
+}
+
 static void refreshLocalIp()
 {
-    struct ifaddrs* interfaces = nullptr;
-    if (getifaddrs(&interfaces) != 0) {
-        snprintf(g_localIp, sizeof(g_localIp), "ОШИБКА СЕТИ");
-        return;
-    }
-
-    bool found = false;
-    for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
-        if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
-            !(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK))
-            continue;
-
-        const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
-        char ip[INET_ADDRSTRLEN] = {};
-        if (inet_ntop(AF_INET, &address->sin_addr, ip, sizeof(ip))) {
-            snprintf(g_localIp, sizeof(g_localIp), "%s", ip);
-            found = true;
-            break;
+    // Preferred source: the console's own network-control service.
+    // Unlike arbitrary interface enumeration, this reports the configured
+    // PS4 connection address for Ethernet or Wi-Fi.
+    if (g_netCtlReady) {
+        OrbisNetCtlInfo info = {};
+        const int32_t result = sceNetCtlGetInfo(ORBIS_NET_CTL_INFO_IP_ADDRESS, &info);
+        info.ip_address[sizeof(info.ip_address) - 1] = '\0';
+        if (result == 0 && isUsableLocalIPv4(info.ip_address)) {
+            snprintf(g_localIp, sizeof(g_localIp), "%s", info.ip_address);
+            return;
         }
+
+        char message[128];
+        snprintf(message, sizeof(message),
+            "sceNetCtlGetInfo(IP_ADDRESS) failed: rc=0x%08X ip=%s",
+            static_cast<uint32_t>(result), info.ip_address);
+        writeStartupLog(message);
     }
-    freeifaddrs(interfaces);
-    if (!found) snprintf(g_localIp, sizeof(g_localIp), "НЕТ IPv4 СЕТИ");
+
+    // Compatibility fallback for unusual firmware/network-control states.
+    struct ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) == 0) {
+        for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
+            if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
+                !(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK))
+                continue;
+
+            const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+            char ip[INET_ADDRSTRLEN] = {};
+            if (inet_ntop(AF_INET, &address->sin_addr, ip, sizeof(ip)) &&
+                isUsableLocalIPv4(ip)) {
+                snprintf(g_localIp, sizeof(g_localIp), "%s", ip);
+                freeifaddrs(interfaces);
+                writeStartupLog("PS4 IPv4 address resolved by getifaddrs fallback");
+                return;
+            }
+        }
+        freeifaddrs(interfaces);
+    } else {
+        char message[96];
+        snprintf(message, sizeof(message), "getifaddrs failed: errno=%d", errno);
+        writeStartupLog(message);
+    }
+
+    snprintf(g_localIp, sizeof(g_localIp), "НЕТ IP — ПРОВЕРЬ СЕТЬ PS4");
 }
 
 static void refreshFirmwareVersion()
@@ -1249,6 +1340,11 @@ int main(int argc, char* argv[])
     setvbuf(stdout, nullptr, _IONBF, 0);
     writeStartupLog("AMEGA 0.2.2 startup");
 
+    // Initialize Net/NetCtl and create the required socket pool before any
+    // network-interface query or BSD socket use.
+    const bool networkReady = initializePs4Network();
+    if (networkReady) refreshLocalIp();
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
         char message[256];
         snprintf(message, sizeof(message), "SDL_Init failed: %s", SDL_GetError());
@@ -1322,7 +1418,12 @@ int main(int argc, char* argv[])
     loadOrCreateReceiverId();
     refreshLocalIp();
     refreshFirmwareVersion();
-    openDiscoverySocket();
+    if (g_netStackReady) {
+        openDiscoverySocket();
+    } else {
+        snprintf(g_status, sizeof(g_status), "СЕТЬ НЕ ИНИЦИАЛИЗИРОВАНА");
+        writeStartupLog("Discovery socket skipped because PS4 network initialization failed");
+    }
     if (g_socket < 0)
         writeStartupLog("Discovery socket unavailable; UI remains active");
 
