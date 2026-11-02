@@ -818,6 +818,13 @@ static void pollNetwork()
         for (int i = 0; i < MAX_SENDERS; ++i)
             if (g_senders[i].used) { g_selected = i; break; }
     }
+
+    // Do not leave a stale "PC found" message after the sender disappears.
+    if (g_selected < 0) {
+        snprintf(g_status, sizeof(g_status), "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ С ПК");
+    } else if (g_screen == SCREEN_DISCOVERY) {
+        snprintf(g_status, sizeof(g_status), "ПК НАЙДЕН: %s", g_senders[g_selected].name);
+    }
 }
 
 static void openDiscoverySocket()
