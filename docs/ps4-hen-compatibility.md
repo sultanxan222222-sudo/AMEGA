@@ -1,49 +1,108 @@
 # PS4 HEN / GoldHEN compatibility
 
-## Scope
+**Research snapshot:** 2026-11-02. This document tracks public reports and upstream project documentation; it does not imply that AMEGA has been hardware-tested on every listed combination.
 
-The first console target is a PS4 with a compatible HEN environment, including GoldHEN where its documented capabilities are available. HEN versions, firmware versions, payloads, and enabled services differ. AMEGA must detect capabilities at runtime instead of assuming a fixed firmware number or endpoint.
+## Compatibility layers
 
-**Important distinction:** HEN/GoldHEN and the separate "Remote Package Installer" homebrew are not the same application. HEN being active does not prove that the RPI app is installed, open, or listening.
+A PS4 exploit, kernel patch, HEN payload, GoldHEN services, a separate RPI homebrew, and an AMEGA build are different layers. AMEGA must query the feature that it needs instead of assuming a working port based on firmware alone.
 
-## Two separate capabilities
+## Firmware snapshot
 
-**File reception** is AMEGA's own LAN transfer feature. It must work independently of whether remote package installation is available.
+| Firmware | Public evidence reviewed | AMEGA policy |
+|---|---|---|
+| 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71, 11.00 | Listed by the public GoldHEN v2.4b18 GitHub pre-release | Probe each service at runtime |
+| 12.00, 12.02 | Scene-Collective PS4HEN v2.2.0 BETA README lists support through 12.02, with Remote Package Install | Treat as open-source HEN, not GoldHEN; test the actual service |
+| 12.50, 12.52 | Some exploit entry points are documented, but current HenJB matrix reports no shipped kernel patch | Do not infer a running HEN from an entry-point exploit |
+| 13.02, 13.04, 13.50 | SiSTRo's own GoldHEN v2.4b18.12 beta adds these three firmwares | GoldHEN beta; record exact build |
+| 13.52 | SiSTRo's separate GoldHEN v2.4b18.11 beta specifically adds 13.52; community hardware test results exist | GoldHEN beta; record exact build |
+| 14.00 | BD-JB / open-source HEN activity is experimental and scene sources conflict; GoldHEN is not a reliable assumption | Core AMEGA networking must not depend on GoldHEN |
+| Later than 14.00 | No supported HEN path established by sources reviewed for this snapshot | No compatibility claim |
 
-**Package installation** is an optional adapter to a supported console mechanism. Its availability must be reported separately from ordinary reception.
+Firmware exploit availability does not guarantee a stable HEN payload. In particular, GoldHEN 2.4b18.11 and 2.4b18.12 are separate beta builds for different 13.xx firmware groups. GoldHEN support also does not guarantee that optional services are enabled.
 
-## Integration modes
+## GoldHEN capabilities
 
-### Native AMEGA receiver — primary target
+The GoldHEN project lists Remote Package Install, FTP on TCP 2121, BinLoader on TCP 9090, Klog on TCP 3232, plugins and internal package installation from `/data/pkg`.
 
-The AMEGA PS4 application discovers Windows senders, asks the user to accept or decline, receives into a staging directory, verifies the file, and exposes a separate installation action when a supported installer capability is detected.
+AMEGA rules:
+- Detect optional service liveness before exposing an adapter.
+- Keep core discovery and future native transfer independent from FTP, BinLoader and Klog.
+- Never use BinLoader for ordinary file transfer; GoldHEN labels it experimental and warns that arbitrary payloads may crash the console.
+- Treat Klog as opt-in diagnostics only.
+- Package Installer can scan USB and, when configured, internal `/data/pkg`; copy to that directory only after a successful transfer and explicit user action.
+- Check internal free space before any staging copy. A package copy plus install activity can require more space than the PKG file size.
 
-### Existing Remote Package Installer — optional compatibility
+## Two remote-install mechanisms that must not be conflated
 
-A documented third-party Remote Package Installer workflow uses an HTTP API on port 12800, including `/api/is_exists` and `/api/install`. The receiver app must remain in the foreground for that API workflow. The Windows sender must implement correct HTTP Range responses because package parsing requires arbitrary byte offsets.
+1. **GoldHEN's advertised Remote Package Install feature.** GoldHEN lists this capability, but the project-level feature list does not establish the exact API, port, or runtime service health for every version. Probe and test the real adapter.
+2. **Standalone Remote Package Installer homebrew (RPI).** The independent app documents an API on TCP 12800, including `POST /api/is_exists`, `POST /api/install`, task progress and control endpoints. It must remain in the foreground for this API implementation; when suspended, it may stop answering.
 
-This compatibility path is optional. AMEGA must never silently assume the RPI app is installed merely because HEN is active.
+A TCP connection to port 12800 is not a health check. A current PC sender documents an application-level liveness request because the RPI event loop can stop responding while the TCP port still appears open. During active package downloads, the RPI API may also pause its progress responses; a sender should not falsely report a failed transfer just because a progress poll times out.
 
-## Integration rules
+### AMEGA development-branch RPI adapter
 
-- Prefer documented and version-checked interfaces.
-- Keep GoldHEN-specific and existing-RPI code behind separate installation-adapter boundaries.
-- Detect availability before enabling the Install action.
-- Never silently fall back to an undocumented port or payload.
-- Show whether a package is merely received, verified, queued for installation, or confirmed installed.
-- Do not remove received files after installation unless the user separately confirms deletion.
-- Keep test packages available for safe transfer testing without attempting installation.
+The Windows application now has a separate **Проверить RPI** probe and **Установить через RPI** action:
 
-## Hardware validation matrix
+- It targets only the selected console and calls `POST /api/is_exists` on TCP 12800; the test uses the harmless dummy title ID `CUSA00000`, so a responding `status: fail` still demonstrates API liveness.
+- After a separate confirmation, it checks the PS4 PKG magic (`7F 43 4E 54`) and recomputes the selected file's whole SHA-256 before asking RPI to install.
+- It posts a direct package URL to `/api/install`. The local HTTP endpoint is restricted to the selected console's IPv4 address, supports Range/ETag, and expires after 12 hours.
+- The PC UI counts unique byte ranges read by HTTP responses; repeated/overlapping ranges are not counted twice. This is source-transfer coverage, not installation progress.
+- The install request may take up to 150 seconds while RPI reads PKG metadata. If the response is ambiguous or missing a task ID, AMEGA keeps the source open and tells the user not to submit the same PKG again until checking the console.
 
-Before release, test on real hardware and record:
-- exact PS4 model;
-- firmware version;
-- HEN/GoldHEN version;
-- enabled GoldHEN services;
-- whether a separate Remote Package Installer app is installed;
-- wired Ethernet versus Wi-Fi;
-- package size tested;
-- receive, resume, digest verification, and installation outcomes.
+This is only the Standalone RPI adapter. It does not implement GoldHEN's separate built-in Remote Package Install service. AMEGA still needs a real PS4 test and authoritative task-result polling before it can claim an installation is finished.
 
-No firmware compatibility claim is valid until it has a reproducible test record.
+Any RPI route requires correct HTTP Range handling: `206 Partial Content`, `Content-Range`, and `416` for an impossible range. A generic whole-file HTTP endpoint can break PKG metadata reads.
+
+## Transfer and installation must remain separate
+
+- Native AMEGA transfer should run on the local network without requiring a third-party installer.
+- Receive into an AMEGA staging directory, persist byte offset and transfer ID, resume only from validated offsets, and hash the completed file on the PS4.
+- Mark a file VERIFIED only after receiver-side SHA-256 matches the PC manifest.
+- Require separate user confirmation to install.
+- Report RECEIVED, VERIFIED, INSTALL_QUEUED, INSTALLING, INSTALLED and FAILED as distinct states.
+- Never delete the source package automatically.
+
+## OpenOrbis interfaces
+
+OpenOrbis headers provide networking APIs, `sceNetCtl` network information, `scePad` controller APIs, `sceVideoOut` output APIs, system-module calls and AppInstUtil declarations. The public toolchain warns that header/stub coverage may be incomplete or need updates. AMEGA may use these APIs only behind tested adapters.
+
+- Current receiver uses POSIX sockets and `getifaddrs`; future network diagnostics may compare them with `sceNetCtlGetInfo` (IP, netmask, route, SSID/RSSI).
+- Current controller uses SDL joystick events; `scePadRead` may serve as a native fallback after hardware testing.
+- Keep SDL as the working renderer; direct VideoOut/GPU code requires a complete buffer/flip lifecycle, not just a function call.
+- Do not directly call AppInstUtil as the default installer. Reverse-engineering research documents a proof of concept that returned success but produced a package whose title later failed due to filesystem block mapping. The API declaration itself is not proof of safe installation.
+
+## Hardware validation record required
+
+Record exact console model, firmware, HEN name/version/build, enabled services, RPI app state, Ethernet/Wi-Fi, router isolation settings, test file size, launch/exit, controller input, discovery, transfer/resume, digest and installation result. A CI compile is not a hardware pass.
+
+## New receiver diagnostics in AMEGA 0.2.2
+
+The PS4 receiver now:
+- displays its own detected local IPv4 address;
+- attempts to read the system software version through the documented current OpenOrbis sceKernelGetSystemSwVersion ABI;
+- includes that version as an optional firmware_version field in its UDP announcement;
+- lets the Windows UI show the reported firmware beside the discovered console.
+
+The bundled OpenOrbis build container has an older no-argument placeholder declaration for this import. The source uses a local ABI struct and a typed function-pointer bridge based on current upstream OpenOrbis headers. CI compilation passes, but the call is **not hardware-validated yet**. If it returns an error or malformed value, the receiver shows 'не определена'; AMEGA never guesses firmware from model or jailbreak method.
+
+This is diagnostic information only. The actual installer mode still must be detected using an application-level API or explicit user selection.
+
+## Primary firmware references
+
+- SiSTRo GoldHEN v2.4b18.11 (13.52 beta): https://ko-fi.com/s/ccbe9f7bf0
+- SiSTRo GoldHEN v2.4b18.12 (13.02 / 13.04 / 13.50 beta): https://ko-fi.com/s/85ea22bd2f
+- GoldHEN public GitHub v2.4b18 feature list / supported firmware: https://github.com/GoldHEN/GoldHEN/releases
+- Community hardware test details for 13.50 and 13.52: https://github.com/caziques/PS4
+- Current PS4 firmware entry-point status: https://consolemods.org/wiki/Ps4_getting_started
+- Firmware chain status: https://henjb.com/
+## Native AMEGA file reception does not require installer services
+
+The current AMEGA receiver has its own HTTP Range download and receiver-side SHA-256 path. It does not require GoldHEN FTP, BinLoader, Klog, GoldHEN's Remote Package Install feature, or the separate Remote Package Installer application to receive a file.
+
+Verified files are staged under /data/AMEGA/Download. Partial files are retained with resume metadata; the transfer ID is content-derived so the same package can resume after the PC app restarts. The receiver requests a fresh short-lived token after an explicit Accept action and never writes that token to the resume file.
+
+For optional installation, the Windows application can now invoke the separate Standalone RPI API after an additional confirmation. This adapter is not required for native AMEGA receiving and does not imply that GoldHEN's own Remote Package Install API is enabled. AMEGA does not yet claim installation completion: the current UI reports the RPI task ID when available and unique HTTP byte coverage served, but authoritative RPI task-result polling and real-console validation remain open.
+
+CI currently verifies the streaming SHA-256 implementation and a local Range-resume test that interrupts a 4,194,427-byte transfer after 600,000 bytes, then checks that the second request resumes from that exact byte offset and that the completed digest matches. CI does not prove filesystem permissions, runtime ABI behavior, or controller/network stability on a real PS4; those remain hardware validation requirements.
+
+The receiver's system software readout uses a compatibility bridge to the documented OpenOrbis ABI. It compiles in the pinned build container but must be compared against the console's System Information screen before its result is treated as verified. Firmware reporting is diagnostic only and never selects an installer mode.

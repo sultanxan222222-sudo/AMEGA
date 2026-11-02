@@ -6,6 +6,10 @@ on:
       - "src/ps4/**"
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
+      - "tools/test_sha256.cpp"
+      - "tools/test_downloader.cpp"
+      - "tools/test_downloader.py"
+      - "src/ps4/receiver/sha256.h"
       - ".github/workflows/ps4-build.yml"
   pull_request:
     paths:
@@ -25,6 +29,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Test portable SHA-256 implementation
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tools/test_sha256.cpp -o /tmp/amega-sha256-test
+          /tmp/amega-sha256-test
+
+      - name: Test resumable HTTP Range download and receiver digest
+        run: python3 tools/test_downloader.py
+
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
 
@@ -33,7 +46,7 @@ jobs:
           docker run --rm --user 0:0 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/src/ps4 \
-            openorbisofficial/toolchain:latest \
+            openorbisofficial/toolchain@sha256:f752d09f9d3227c729ee069f29a05450bd8fa4ef5e785c0929ab8479f7dc4e64 \
             bash -lc 'make clean'
 
       - name: Generate GP4 manifest
@@ -48,7 +61,7 @@ jobs:
           docker run --rm --user 0:0 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/src/ps4 \
-            openorbisofficial/toolchain:latest \
+            openorbisofficial/toolchain@sha256:f752d09f9d3227c729ee069f29a05450bd8fa4ef5e785c0929ab8479f7dc4e64 \
             bash -lc 'make all'
 
       - name: Upload PS4 package

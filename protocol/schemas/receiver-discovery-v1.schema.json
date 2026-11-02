@@ -27,6 +27,7 @@
     },
     "display_name": { "type": "string", "minLength": 1, "maxLength": 48 },
     "receiver_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "firmware_version": { "type": "string", "minLength": 1, "maxLength": 32 },
     "reply_to_nonce": {
       "type": "string",
       "minLength": 32,

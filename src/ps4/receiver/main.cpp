@@ -7,15 +7,31 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "font_ru.h"
+#include "downloader.h"
+
+// OpenOrbis toolchain images in the wild do not all ship the newest
+// OrbisKernelSwVersion typedef. Keep the documented 0x28 ABI local so
+// this receiver can still build against older toolchain snapshots.
+#ifndef AMEGA_ORBIS_KERNEL_SW_VERSION_DEFINED
+#define AMEGA_ORBIS_KERNEL_SW_VERSION_DEFINED
+typedef struct {
+    size_t Size;
+    char VersionString[0x1C];
+    uint32_t Version;
+} OrbisKernelSwVersion;
+#endif
 
 static const int SENDER_DISCOVERY_PORT = 38470;
 static const int RECEIVER_DISCOVERY_PORT = 38472;
@@ -26,6 +42,7 @@ struct SenderEntry {
     char id[48];
     char name[64];
     char ip[INET_ADDRSTRLEN];
+    char instanceNonce[40];
     int httpPort;
     Uint32 lastSeen;
     bool used;
@@ -38,8 +55,31 @@ static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
+static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
+static char g_firmwareVersion[48] = "НЕ ОПРЕДЕЛЕНА";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
+static SDL_GameController* g_gameController = nullptr;
+static Uint32 g_lastNetworkRefresh = 0;
+
+enum AmegaScreen {
+    SCREEN_DISCOVERY = 0,
+    SCREEN_OFFER = 1,
+    SCREEN_ACCEPTED = 2,
+    SCREEN_DOWNLOADING = 3,
+    SCREEN_VERIFIED = 4
+};
+static AmegaScreen g_screen = SCREEN_DISCOVERY;
+static char g_offerTransferId[48] = {};
+static char g_offerFileName[224] = {};
+static char g_offerSha256[80] = {};
+static uint64_t g_offerFileSize = 0;
+static char g_accessToken[80] = {};
+static AmegaDownloadRuntime g_downloadRuntime;
+static SDL_Thread* g_downloadThread = nullptr;
+
+static void writeStartupLog(const char* message);
+static bool controllerConnected();
 
 static bool randomBytes(unsigned char* out, size_t size)
 {
@@ -96,25 +136,107 @@ static void loadOrCreateReceiverId()
     makeNonce(g_nonce);
 }
 
+static int hexDigitValue(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool appendUtf8(char* out, size_t cap, size_t& used, uint32_t cp)
+{
+    unsigned char bytes[4];
+    size_t count = 0;
+    if (cp <= 0x7f) {
+        bytes[0] = (unsigned char)cp; count = 1;
+    } else if (cp <= 0x7ff) {
+        bytes[0] = (unsigned char)(0xc0 | (cp >> 6));
+        bytes[1] = (unsigned char)(0x80 | (cp & 0x3f)); count = 2;
+    } else if (cp <= 0xffff) {
+        bytes[0] = (unsigned char)(0xe0 | (cp >> 12));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | (cp & 0x3f)); count = 3;
+    } else if (cp <= 0x10ffff) {
+        bytes[0] = (unsigned char)(0xf0 | (cp >> 18));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[3] = (unsigned char)(0x80 | (cp & 0x3f)); count = 4;
+    } else return false;
+
+    if (used + count + 1 > cap) return false;
+    memcpy(out + used, bytes, count);
+    used += count;
+    return true;
+}
+
+static bool parseHex4(const char*& p, uint32_t& value)
+{
+    value = 0;
+    for (int i = 0; i < 4; ++i) {
+        int digit = hexDigitValue(*p++);
+        if (digit < 0) return false;
+        value = (value << 4) | (uint32_t)digit;
+    }
+    return true;
+}
+
 static bool getStringField(const char* json, const char* key, char* out, size_t cap)
 {
+    if (!json || !key || !out || cap == 0) return false;
     char needle[80];
     snprintf(needle, sizeof(needle), "\"%s\"", key);
     const char* p = strstr(json, needle);
-    if (!p) return false;
-    p = strchr(p, ':');
-    if (!p) return false;
+    if (!p || !(p = strchr(p, ':'))) return false;
     ++p;
-    while (*p == ' ' || *p == '\t') ++p;
-    if (*p != '"') return false;
-    ++p;
-    size_t n = 0;
-    while (*p && *p != '"' && n + 1 < cap) {
-        if (*p == '\\' && p[1]) ++p;
-        out[n++] = *p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p++ != '"') return false;
+
+    size_t used = 0;
+    while (*p) {
+        if (*p == '"') {
+            out[used] = 0;
+            return true;
+        }
+        if ((unsigned char)*p < 0x20) return false;
+
+        if (*p != '\\') {
+            if (used + 2 > cap) return false;
+            out[used++] = *p++;
+            continue;
+        }
+
+        ++p;
+        if (!*p) return false;
+        char esc = *p++;
+        uint32_t cp = 0;
+        switch (esc) {
+            case '"': cp = '"'; break;
+            case '\\': cp = '\\'; break;
+            case '/': cp = '/'; break;
+            case 'b': cp = ' '; break;
+            case 'f': cp = ' '; break;
+            case 'n': cp = ' '; break;
+            case 'r': cp = ' '; break;
+            case 't': cp = ' '; break;
+            case 'u':
+                if (!parseHex4(p, cp)) return false;
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    if (p[0] != '\\' || p[1] != 'u') return false;
+                    p += 2;
+                    uint32_t low = 0;
+                    if (!parseHex4(p, low) || low < 0xdc00 || low > 0xdfff) return false;
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) {
+                    return false;
+                }
+                break;
+            default:
+                return false;
+        }
+        if (!appendUtf8(out, cap, used, cp)) return false;
     }
-    out[n] = 0;
-    return *p == '"';
+    return false;
 }
 
 static int getIntField(const char* json, const char* key)
@@ -128,6 +250,462 @@ static int getIntField(const char* json, const char* key)
     return atoi(p);
 }
 
+static int64_t getLongField(const char* json, const char* key)
+{
+    char needle[80];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = strstr(json, needle);
+    if (!p || !(p = strchr(p, ':'))) return -1;
+    ++p;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p < '0' || *p > '9') return -1;
+    char* end = nullptr;
+    long long value = strtoll(p, &end, 10);
+    return end == p || value < 0 ? -1 : (int64_t)value;
+}
+
+static bool sendAll(int sock, const char* data, size_t length)
+{
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = send(sock, data + sent, length - sent, 0);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+static bool httpJsonRequest(const char* ip, int port, const char* method,
+    const char* path, const char* body, const char* token,
+    int* statusOut, char* bodyOut, size_t bodyCap)
+{
+    if (!ip || !method || !path || !statusOut || !bodyOut || bodyCap == 0) return false;
+    bodyOut[0] = 0;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;
+
+    struct timeval timeout = {};
+    timeout.tv_sec = 4;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_in remote = {};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, ip, &remote.sin_addr) != 1 ||
+        connect(sock, reinterpret_cast<sockaddr*>(&remote), sizeof(remote)) != 0) {
+        close(sock);
+        return false;
+    }
+
+    const size_t bodyLength = body ? strlen(body) : 0;
+    if (bodyLength > 1024) {
+        close(sock);
+        return false;
+    }
+
+    char request[2048];
+    int requestLength = snprintf(request, sizeof(request),
+        "%s %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n"
+        "Accept: application/json\r\nUser-Agent: AMEGA-PS4/0.2.2\r\n",
+        method, path, ip, port);
+    if (requestLength < 0 || (size_t)requestLength >= sizeof(request)) {
+        close(sock);
+        return false;
+    }
+
+    size_t used = (size_t)requestLength;
+    if (body) {
+        int extra = snprintf(request + used, sizeof(request) - used,
+            "Content-Type: application/json\r\nContent-Length: %zu\r\n", bodyLength);
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        used += (size_t)extra;
+    }
+    if (token) {
+        int extra = snprintf(request + used, sizeof(request) - used,
+            "X-AMEGA-Token: %s\r\n", token);
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        used += (size_t)extra;
+    }
+    int tail = snprintf(request + used, sizeof(request) - used, "\r\n");
+    if (tail < 0 || (size_t)tail >= sizeof(request) - used) {
+        close(sock);
+        return false;
+    }
+    requestLength = (int)(used + (size_t)tail);
+
+    bool sent = sendAll(sock, request, (size_t)requestLength);
+    if (sent && bodyLength > 0) sent = sendAll(sock, body, bodyLength);
+    if (!sent) {
+        close(sock);
+        return false;
+    }
+
+    char raw[8192] = {};
+    size_t total = 0;
+    while (total + 1 < sizeof(raw)) {
+        ssize_t n = recv(sock, raw + total, sizeof(raw) - total - 1, 0);
+        if (n == 0) break;
+        if (n < 0) {
+            close(sock);
+            return false;
+        }
+        total += (size_t)n;
+    }
+    close(sock);
+    raw[total] = 0;
+
+    char* headerEnd = strstr(raw, "\r\n\r\n");
+    if (!headerEnd) return false;
+    int status = 0;
+    if (sscanf(raw, "HTTP/%*s %d", &status) != 1) return false;
+    *statusOut = status;
+
+    const char* responseBody = headerEnd + 4;
+    size_t responseLength = total - (size_t)(responseBody - raw);
+    if (responseLength + 1 > bodyCap) return false;
+
+    // These small JSON endpoints must be length-delimited. Reject a
+    // truncated body or an unexpected chunked response before parsing JSON.
+    char contentLengthText[64] = {};
+    bool hasContentLength = false;
+    const char* line = std::strstr(raw, "\r\n");
+    if (line) line += 2;
+    while (line && line < headerEnd) {
+        const char* end = std::strstr(line, "\r\n");
+        if (!end || end > headerEnd) end = headerEnd;
+        if (static_cast<size_t>(end - line) >= 15 &&
+            strncasecmp(line, "Content-Length:", 15) == 0) {
+            const char* value = line + 15;
+            while (value < end && (*value == ' ' || *value == '\t')) ++value;
+            size_t length = static_cast<size_t>(end - value);
+            if (length == 0 || length >= sizeof(contentLengthText)) return false;
+            std::memcpy(contentLengthText, value, length);
+            contentLengthText[length] = 0;
+            hasContentLength = true;
+        }
+        if (static_cast<size_t>(end - line) >= 18 &&
+            strncasecmp(line, "Transfer-Encoding:", 18) == 0)
+            return false;
+        if (end == headerEnd) break;
+        line = end + 2;
+    }
+
+    if (!hasContentLength) return false;
+    char* lengthEnd = nullptr;
+    unsigned long long expectedLength = std::strtoull(contentLengthText, &lengthEnd, 10);
+    if (lengthEnd == contentLengthText || *lengthEnd != 0 ||
+        expectedLength != responseLength)
+        return false;
+
+    memcpy(bodyOut, responseBody, responseLength);
+    bodyOut[responseLength] = 0;
+    return true;
+}
+
+static bool isValidTransferId(const char* value)
+{
+    if (!value || std::strlen(value) != 36) return false;
+    for (size_t i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (value[i] != '-') return false;
+        } else if (!isxdigit((unsigned char)value[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool fetchSelectedOffer()
+{
+    if (g_selected < 0 || g_selected >= MAX_SENDERS || !g_senders[g_selected].used)
+        return false;
+
+    char response[4096] = {};
+    int status = 0;
+    SenderEntry& pc = g_senders[g_selected];
+    if (!httpJsonRequest(pc.ip, pc.httpPort, "GET", "/api/v1/offer",
+        nullptr, nullptr, &status, response, sizeof(response))) {
+        snprintf(g_status, sizeof(g_status), "НЕТ ОТВЕТА ОТ ПК");
+        return false;
+    }
+    if (status != 200) {
+        snprintf(g_status, sizeof(g_status), status == 409
+            ? "НА ПК ЕЩЁ НЕ НАЖАЛИ ОТПРАВИТЬ"
+            : "ПК ОТКЛОНИЛ ЗАПРОС ПРЕДЛОЖЕНИЯ");
+        return false;
+    }
+
+    char transferId[48] = {}, fileName[224] = {}, sha256[80] = {};
+    char senderId[48] = {}, fileKind[32] = {};
+    char protocol[24] = {}, offerType[40] = {};
+    int64_t fileSize = getLongField(response, "file_size");
+    if (!getStringField(response, "protocol", protocol, sizeof(protocol)) ||
+        !getStringField(response, "type", offerType, sizeof(offerType)) ||
+        std::strcmp(protocol, "amega") != 0 ||
+        std::strcmp(offerType, "transfer_offer") != 0 ||
+        getIntField(response, "major") != 1 ||
+        !getStringField(response, "sender_id", senderId, sizeof(senderId)) ||
+        !getStringField(response, "transfer_id", transferId, sizeof(transferId)) ||
+        !getStringField(response, "file_name", fileName, sizeof(fileName)) ||
+        !getStringField(response, "file_kind", fileKind, sizeof(fileKind)) ||
+        !getStringField(response, "sha256", sha256, sizeof(sha256)) ||
+        strcmp(senderId, pc.id) != 0 ||
+        !isValidTransferId(transferId) ||
+        std::strcmp(fileKind, "pkg") != 0 ||
+        fileName[0] == 0 ||
+        fileSize <= 0 || std::strlen(sha256) != 64) {
+        snprintf(g_status, sizeof(g_status), "ОШИБКА ДАННЫХ ПРЕДЛОЖЕНИЯ");
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i)
+        if (!isxdigit((unsigned char)sha256[i])) {
+            snprintf(g_status, sizeof(g_status), "НЕВЕРНЫЙ SHA-256 PKG");
+            return false;
+        }
+
+    const bool sameTransfer = strcmp(g_offerTransferId, transferId) == 0 &&
+        strcmp(g_offerSha256, sha256) == 0 &&
+        g_offerFileSize == static_cast<uint64_t>(fileSize);
+    snprintf(g_offerTransferId, sizeof(g_offerTransferId), "%s", transferId);
+    snprintf(g_offerFileName, sizeof(g_offerFileName), "%s", fileName);
+    snprintf(g_offerSha256, sizeof(g_offerSha256), "%s", sha256);
+    g_offerFileSize = (uint64_t)fileSize;
+    if (!sameTransfer) {
+        g_downloadRuntime.bytes.store(0, std::memory_order_relaxed);
+        g_downloadRuntime.errorCode.store(0, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_IDLE, std::memory_order_release);
+        g_downloadRuntime.finalPath[0] = 0;
+    }
+    g_accessToken[0] = 0;
+    g_screen = SCREEN_OFFER;
+    snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПОЛУЧЕНО");
+    writeStartupLog("Offer metadata fetched from selected PC");
+    return true;
+}
+
+static bool acceptSelectedOffer()
+{
+    if (g_screen != SCREEN_OFFER || g_selected < 0 ||
+        g_selected >= MAX_SENDERS || !g_senders[g_selected].used)
+        return false;
+
+    SenderEntry& pc = g_senders[g_selected];
+    char requestBody[512];
+    snprintf(requestBody, sizeof(requestBody),
+        "{\"transfer_id\":\"%s\",\"receiver_id\":\"%s\","
+        "\"instance_nonce\":\"%s\",\"reply_to_nonce\":\"%s\"}",
+        g_offerTransferId, g_receiverId, g_nonce, pc.instanceNonce);
+
+    char response[2048] = {};
+    int status = 0;
+    if (!httpJsonRequest(pc.ip, pc.httpPort, "POST", "/api/v1/accept",
+        requestBody, nullptr, &status, response, sizeof(response))) {
+        snprintf(g_status, sizeof(g_status), "НЕТ ОТВЕТА ПРИ ПОДТВЕРЖДЕНИИ");
+        return false;
+    }
+
+    char token[80] = {};
+    if (status != 200 || !strstr(response, "\"accepted\":true") ||
+        !getStringField(response, "access_token", token, sizeof(token)) ||
+        strlen(token) != 64) {
+        snprintf(g_status, sizeof(g_status), "ПК НЕ ПРИНЯЛ ПОДТВЕРЖДЕНИЕ");
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i) {
+        if (!isxdigit((unsigned char)token[i])) {
+            snprintf(g_status, sizeof(g_status), "НЕВЕРНЫЙ ТОКЕН ДОСТУПА");
+            return false;
+        }
+    }
+
+    snprintf(g_accessToken, sizeof(g_accessToken), "%s", token);
+    g_screen = SCREEN_ACCEPTED;
+    snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПРИНЯТО");
+    writeStartupLog("Receiver accepted current PC offer");
+    return true;
+}
+
+static int downloadWorker(void* userData)
+{
+    AmegaDownloadRequest* request = static_cast<AmegaDownloadRequest*>(userData);
+    if (!request) {
+        g_downloadRuntime.errorCode.store(1007, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        return 1;
+    }
+    const bool success = AmegaReceivePackage(*request, g_downloadRuntime);
+    delete request;
+    return success ? 0 : 1;
+}
+
+static bool startPackageDownload()
+{
+    if (g_downloadThread || g_screen != SCREEN_ACCEPTED || g_selected < 0 ||
+        g_selected >= MAX_SENDERS || !g_senders[g_selected].used ||
+        !isValidTransferId(g_offerTransferId) || !isxdigit((unsigned char)g_accessToken[0]) ||
+        std::strlen(g_accessToken) != 64) {
+        snprintf(g_status, sizeof(g_status), "СНАЧАЛА ПОДТВЕРДИ ПРЕДЛОЖЕНИЕ");
+        return false;
+    }
+
+    AmegaDownloadRequest request = {};
+    snprintf(request.ip, sizeof(request.ip), "%s", g_senders[g_selected].ip);
+    request.port = g_senders[g_selected].httpPort;
+    snprintf(request.transferId, sizeof(request.transferId), "%s", g_offerTransferId);
+    snprintf(request.accessToken, sizeof(request.accessToken), "%s", g_accessToken);
+    request.fileSize = g_offerFileSize;
+    snprintf(request.sha256, sizeof(request.sha256), "%s", g_offerSha256);
+
+    g_downloadRuntime.cancel.store(false, std::memory_order_relaxed);
+    g_downloadRuntime.errorCode.store(0, std::memory_order_relaxed);
+    g_downloadRuntime.bytes.store(0, std::memory_order_relaxed);
+    g_downloadRuntime.finalPath[0] = 0;
+    g_downloadRuntime.state.store(AMEGA_DOWNLOAD_RUNNING, std::memory_order_release);
+
+    AmegaDownloadRequest* copy = new (std::nothrow) AmegaDownloadRequest(request);
+    if (!copy) {
+        g_downloadRuntime.errorCode.store(1008, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        snprintf(g_status, sizeof(g_status), "НЕДОСТАТОЧНО ПАМЯТИ ДЛЯ ЗАДАЧИ");
+        return false;
+    }
+
+    g_downloadThread = SDL_CreateThread(downloadWorker, "AMEGA-PKG-Download", copy);
+    if (!g_downloadThread) {
+        delete copy;
+        g_downloadRuntime.errorCode.store(1009, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        snprintf(g_status, sizeof(g_status), "НЕ УДАЛОСЬ ЗАПУСТИТЬ ЗАГРУЗКУ");
+        return false;
+    }
+
+    g_screen = SCREEN_DOWNLOADING;
+    snprintf(g_status, sizeof(g_status), "ЗАГРУЗКА PKG НАЧАЛАСЬ");
+    writeStartupLog("Started range-based PKG download to AMEGA staging directory");
+    return true;
+}
+
+static void reapDownloadThread()
+{
+    if (!g_downloadThread) return;
+    const int state = g_downloadRuntime.state.load(std::memory_order_acquire);
+    if (state != AMEGA_DOWNLOAD_PAUSED &&
+        state != AMEGA_DOWNLOAD_COMPLETE &&
+        state != AMEGA_DOWNLOAD_FAILED)
+        return;
+
+    int threadResult = 0;
+    SDL_WaitThread(g_downloadThread, &threadResult);
+    g_downloadThread = nullptr;
+    (void)threadResult;
+
+    if (state == AMEGA_DOWNLOAD_COMPLETE) {
+        g_accessToken[0] = 0;
+        g_screen = SCREEN_VERIFIED;
+        snprintf(g_status, sizeof(g_status), "ФАЙЛ ПОЛУЧЕН И SHA-256 СОВПАЛ");
+        writeStartupLog("PKG download completed and receiver SHA-256 verified");
+    } else if (state == AMEGA_DOWNLOAD_PAUSED) {
+        g_screen = SCREEN_ACCEPTED;
+        snprintf(g_status, sizeof(g_status), "ЗАГРУЗКА ПРИОСТАНОВЛЕНА. X - ПРОДОЛЖИТЬ");
+        writeStartupLog("PKG download paused; verified partial bytes are retained for resume");
+    } else {
+        g_screen = SCREEN_ACCEPTED;
+        const int error = g_downloadRuntime.errorCode.load(std::memory_order_relaxed);
+        if (error == 4)
+            snprintf(g_status, sizeof(g_status), "НЕДОСТАТОЧНО МЕСТА НА ДИСКЕ");
+        else if (error == 401 || error == 403)
+            snprintf(g_status, sizeof(g_status), "ДОСТУП ИСТЁК. ВЫБЕРИ ПК И ПОЛУЧИ ПРЕДЛОЖЕНИЕ СНОВА");
+        else if (error == 8)
+            snprintf(g_status, sizeof(g_status), "SHA-256 НЕ СОВПАЛ. ПОВТОРИ ЗАГРУЗКУ");
+        else
+            snprintf(g_status, sizeof(g_status), "СЕТЬ ПРЕРВАНА. X - ПРОДОЛЖИТЬ ЗАГРУЗКУ");
+        char message[96];
+        snprintf(message, sizeof(message), "PKG download stopped; error=%d", error);
+        writeStartupLog(message);
+    }
+}
+
+static void refreshLocalIp()
+{
+    struct ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) {
+        snprintf(g_localIp, sizeof(g_localIp), "ОШИБКА СЕТИ");
+        return;
+    }
+
+    bool found = false;
+    for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
+        if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
+            !(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK))
+            continue;
+
+        const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+        char ip[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &address->sin_addr, ip, sizeof(ip))) {
+            snprintf(g_localIp, sizeof(g_localIp), "%s", ip);
+            found = true;
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    if (!found) snprintf(g_localIp, sizeof(g_localIp), "НЕТ IPv4 СЕТИ");
+}
+
+static void refreshFirmwareVersion()
+{
+    OrbisKernelSwVersion version = {};
+    version.Size = sizeof(version);
+    // The bundled OpenOrbis container has the same import symbol but an
+    // older no-argument placeholder declaration. Use the ABI recorded by
+    // current upstream OpenOrbis headers without changing the imported NID.
+    using GetSystemSwVersionFn = int32_t (*)(OrbisKernelSwVersion*);
+    const auto getSystemSwVersion =
+        reinterpret_cast<GetSystemSwVersionFn>(&sceKernelGetSystemSwVersion);
+    const int32_t result = getSystemSwVersion(&version);
+    if (result < 0) {
+        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+        writeStartupLog("sceKernelGetSystemSwVersion unavailable");
+        return;
+    }
+
+    char raw[sizeof(version.VersionString) + 1] = {};
+    memcpy(raw, version.VersionString, sizeof(version.VersionString));
+    raw[sizeof(version.VersionString)] = '\0';
+
+    char* start = raw;
+    while (*start && isspace((unsigned char)*start)) ++start;
+    size_t length = strlen(start);
+    while (length > 0 && isspace((unsigned char)start[length - 1]))
+        start[--length] = '\0';
+
+    // The version field should be plain digits and dots. Reject unexpected
+    // bytes rather than placing untrusted system data directly into JSON.
+    for (size_t i = 0; i < length; ++i) {
+        if (!isdigit((unsigned char)start[i]) && start[i] != '.') {
+            snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+            writeStartupLog("Firmware version string had an unexpected format");
+            return;
+        }
+    }
+
+    if (length == 0) {
+        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+        return;
+    }
+
+    snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "%s", start);
+    char message[96];
+    snprintf(message, sizeof(message), "Firmware detected: %s", g_firmwareVersion);
+    writeStartupLog(message);
+}
+
 static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
 {
     if (g_socket < 0 || !g_lastSenderNonce[0]) return;
@@ -137,9 +715,9 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "{\"protocol\":\"amega\",\"major\":1,"
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
-        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.0\","
-        "\"reply_to_nonce\":\"%s\"}",
-        g_receiverId, g_nonce, g_lastSenderNonce);
+        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
+        "\"firmware_version\":\"%s\",\"reply_to_nonce\":\"%s\"}",
+        g_receiverId, g_nonce, g_firmwareVersion, g_lastSenderNonce);
 
     if (unicastTarget) {
         sockaddr_in target = *unicastTarget;
@@ -211,6 +789,7 @@ static void updateSender(const char* json, const sockaddr_in& from)
     snprintf(entry.id, sizeof(entry.id), "%s", id);
     snprintf(entry.name, sizeof(entry.name), "%s", name);
     snprintf(entry.ip, sizeof(entry.ip), "%s", ip);
+    snprintf(entry.instanceNonce, sizeof(entry.instanceNonce), "%s", nonce);
     entry.httpPort = port;
     entry.lastSeen = SDL_GetTicks();
     entry.used = true;
@@ -367,35 +946,112 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
     drawText(renderer, 62, 52, "AMEGA", GOLD, 4);
     drawText(renderer, 64, 126, "ПЕРЕДАЧА ИГР ПО WI-FI", TEXT, 2);
 
-    fill(renderer, 60, 185, 1160, 2, PANEL2);
-    drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
-
-    int count = 0;
-    for (int i = 0; i < MAX_SENDERS; ++i) if (g_senders[i].used) ++count;
-
-    if (count == 0) {
-        fill(renderer, 60, 275, 1160, 150, PANEL);
-        drawText(renderer, 96, 320, "ИЩУ КОМПЬЮТЕР AMEGA...", TEXT, 2);
-        drawText(renderer, 96, 370, "ПК И PS4 ДОЛЖНЫ БЫТЬ В ОДНОЙ WI-FI СЕТИ", MUTED, 1);
+    if (g_screen == SCREEN_OFFER) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ОТ КОМПЬЮТЕРА", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        char shortName[88] = {};
+        snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
+        drawText(renderer, 92, 310, shortName, TEXT, 1);
+        char sizeLine[80] = {};
+        snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
+            static_cast<double>(g_offerFileSize) / (1024.0 * 1024.0));
+        drawText(renderer, 92, 360, sizeLine, MUTED, 1);
+        char hashLine[96] = {};
+        snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
+        drawText(renderer, 92, 400, hashLine, MUTED, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "X - ПРИНЯТЬ     O - НАЗАД", TEXT, 1);
+        drawText(renderer, 64, 685, "ПРИНЯТИЕ СОХРАНИТ ФАЙЛ НА PS4 ТОЛЬКО ПОСЛЕ ПРОВЕРКИ", MUTED, 1);
+    } else if (g_screen == SCREEN_ACCEPTED) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ПРИНЯТО", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        drawText(renderer, 96, 320, "ФАЙЛ БУДЕТ СОХРАНЁН В AMEGA / DOWNLOAD", TEXT, 1);
+        uint64_t received = g_downloadRuntime.bytes.load(std::memory_order_relaxed);
+        char receivedLine[96] = {};
+        snprintf(receivedLine, sizeof(receivedLine), "УЖЕ ПОЛУЧЕНО: %.2f MB",
+            static_cast<double>(received) / (1024.0 * 1024.0));
+        drawText(renderer, 96, 370, receivedLine, MUTED, 1);
+        drawText(renderer, 96, 420, "ПОСЛЕ ЗАГРУЗКИ AMEGA СВЕРИТ SHA-256", TEXT, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "X - НАЧАТЬ / ПРОДОЛЖИТЬ     O - НАЗАД", TEXT, 1);
+        drawText(renderer, 64, 685, "ЧАСТИЧНЫЙ ФАЙЛ СОХРАНЯЕТСЯ ДЛЯ ВОЗОБНОВЛЕНИЯ", MUTED, 1);
+    } else if (g_screen == SCREEN_DOWNLOADING) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ЗАГРУЗКА PKG НА PS4", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        uint64_t total = g_offerFileSize;
+        uint64_t received = g_downloadRuntime.bytes.load(std::memory_order_relaxed);
+        if (received > total) received = total;
+        int percent = total > 0 ? static_cast<int>((received * 100u) / total) : 0;
+        char progressLine[96] = {};
+        snprintf(progressLine, sizeof(progressLine), "ПОЛУЧЕНО: %d%%", percent);
+        drawText(renderer, 96, 320, progressLine, TEXT, 2);
+        char sizeLine[120] = {};
+        snprintf(sizeLine, sizeof(sizeLine), "%.2f MB ИЗ %.2f MB",
+            static_cast<double>(received) / (1024.0 * 1024.0),
+            static_cast<double>(total) / (1024.0 * 1024.0));
+        drawText(renderer, 96, 375, sizeLine, MUTED, 1);
+        fill(renderer, 96, 425, 1000, 22, PANEL2);
+        int width = static_cast<int>((static_cast<uint64_t>(1000) * percent) / 100u);
+        if (width > 0) fill(renderer, 96, 425, width, 22, GREEN);
+        const int state = g_downloadRuntime.state.load(std::memory_order_relaxed);
+        drawText(renderer, 96, 475,
+            state == AMEGA_DOWNLOAD_VERIFYING ? "ПРОВЕРКА SHA-256..." : "ЗАПИСЬ ВРЕМЕННОГО ФАЙЛА...",
+            GOLD, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "O - ПРИОСТАНОВИТЬ (ЧАСТИЧНЫЙ ФАЙЛ ОСТАНЕТСЯ)", TEXT, 1);
+        drawText(renderer, 64, 685, "НЕ ЗАКРЫВАЙ ПРИЛОЖЕНИЕ ДЛЯ ПОЛУЧЕНИЯ МАКСИМАЛЬНОЙ СКОРОСТИ", MUTED, 1);
+    } else if (g_screen == SCREEN_VERIFIED) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ФАЙЛ ПОЛУЧЕН И ПРОВЕРЕН", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        drawText(renderer, 96, 320, "SHA-256 СОВПАЛ С ОРИГИНАЛОМ НА ПК", GREEN, 1);
+        drawText(renderer, 96, 375, "ФАЙЛ СОХРАНЁН:", TEXT, 1);
+        char pathLine[112] = {};
+        snprintf(pathLine, sizeof(pathLine), "%.88s", g_downloadRuntime.finalPath);
+        drawText(renderer, 96, 420, pathLine, MUTED, 1);
+        drawText(renderer, 64, 555, "ОРИГИНАЛЬНЫЙ PKG НА ПК НЕ УДАЛЯЛСЯ", GREEN, 1);
+        drawText(renderer, 64, 625, "O - ВЕРНУТЬСЯ К СПИСКУ КОМПЬЮТЕРОВ", TEXT, 1);
+        drawText(renderer, 64, 685, "УСТАНОВКА ИГРЫ ОСТАЁТСЯ ОТДЕЛЬНЫМ ДЕЙСТВИЕМ", MUTED, 1);
     } else {
-        int row = 0;
-        for (int i = 0; i < MAX_SENDERS; ++i) {
-            if (!g_senders[i].used) continue;
-            const bool selected = (i == g_selected);
-            fill(renderer, 60, 270 + row * 92, 1160, 78, selected ? PANEL2 : PANEL);
-            if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
-            drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
-            char line[100];
-            snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
-            drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
-            ++row;
+        fill(renderer, 60, 185, 1160, 2, PANEL2);
+        drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
+
+        int count = 0;
+        for (int i = 0; i < MAX_SENDERS; ++i) if (g_senders[i].used) ++count;
+
+        if (count == 0) {
+            fill(renderer, 60, 275, 1160, 150, PANEL);
+            drawText(renderer, 96, 320, "ИЩУ КОМПЬЮТЕР AMEGA...", TEXT, 2);
+            drawText(renderer, 96, 370, "ПК И PS4 ДОЛЖНЫ БЫТЬ В ОДНОЙ WI-FI СЕТИ", MUTED, 1);
+        } else {
+            int row = 0;
+            for (int i = 0; i < MAX_SENDERS; ++i) {
+                if (!g_senders[i].used) continue;
+                const bool selected = (i == g_selected);
+                fill(renderer, 60, 270 + row * 92, 1160, 78, selected ? PANEL2 : PANEL);
+                if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
+                drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
+                char line[100];
+                snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
+                drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
+                ++row;
+            }
         }
+
+        fill(renderer, 60, 520, 1160, 2, PANEL2);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 575, "IP PS4:", TEXT, 1);
+        drawText(renderer, 160, 575, g_localIp, MUTED, 1);
+        drawText(renderer, 64, 600, "ПРОШИВКА PS4:", TEXT, 1);
+        drawText(renderer, 240, 600, g_firmwareVersion, MUTED, 1);
+        drawText(renderer, 64, 625, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
+        drawText(renderer, 64, 650, "X - ПРЕДЛОЖЕНИЕ     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
+        drawText(renderer, 64, 685, "ВЫБЕРИ ПК И НАЖМИ X, ЧТОБЫ ПОСМОТРЕТЬ PKG", MUTED, 1);
     }
 
-    fill(renderer, 60, 520, 1160, 2, PANEL2);
-    drawText(renderer, 64, 555, g_status, GREEN, 1);
-    drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
-    drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
     if (surfaceRenderer)
         SDL_UpdateWindowSurface(window);
@@ -403,7 +1059,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
 
 static void moveSelection(int direction)
 {
-    if (g_selected < 0) return;
+    if (g_screen != SCREEN_DISCOVERY || g_selected < 0) return;
 
     for (int n = 1; n <= MAX_SENDERS; ++n) {
         const int candidate = (g_selected + direction * n + MAX_SENDERS * 2) % MAX_SENDERS;
@@ -414,34 +1070,141 @@ static void moveSelection(int direction)
     }
 }
 
-static void handleController(SDL_Event& event)
+static void activateSelection()
 {
-    // SDL reports a DualShock D-pad as a hat on most controller mappings.
-    // Keep the button fallback for mappings that expose it as buttons.
-    if (event.type == SDL_JOYHATMOTION && event.jhat.hat == 0) {
-        if (event.jhat.value & SDL_HAT_UP)
-            moveSelection(-1);
-        else if (event.jhat.value & SDL_HAT_DOWN)
-            moveSelection(1);
+    if (g_screen == SCREEN_DISCOVERY)
+        fetchSelectedOffer();
+    else if (g_screen == SCREEN_OFFER)
+        acceptSelectedOffer();
+    else if (g_screen == SCREEN_ACCEPTED)
+        startPackageDownload();
+}
+
+static void returnToPreviousScreen()
+{
+    if (g_screen == SCREEN_DISCOVERY) {
+        g_selected = -1;
+        snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+        return;
+    }
+    if (g_screen == SCREEN_DOWNLOADING) {
+        g_downloadRuntime.cancel.store(true, std::memory_order_relaxed);
+        snprintf(g_status, sizeof(g_status), "ОСТАНОВКА. ЧАСТИЧНЫЙ ФАЙЛ СОХРАНЯЕТСЯ");
         return;
     }
 
+    g_screen = SCREEN_DISCOVERY;
+    g_accessToken[0] = 0;
+    snprintf(g_status, sizeof(g_status), "ВОЗВРАТ К СПИСКУ КОМПЬЮТЕРОВ");
+}
+
+static void openInputDevices()
+{
+    if (g_gameController && SDL_GameControllerGetAttached(g_gameController)) return;
+    if (g_gameController) {
+        SDL_GameControllerClose(g_gameController);
+        g_gameController = nullptr;
+    }
+    if (g_controller) {
+        SDL_JoystickClose(g_controller);
+        g_controller = nullptr;
+    }
+
+    // Prefer SDL's standardized game-controller mapping (Cross=A, Circle=B,
+    // D-pad buttons). Fall back to raw joystick events for unusual mappings.
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        g_gameController = SDL_GameControllerOpen(i);
+        if (g_gameController) {
+            writeStartupLog("GameController input opened");
+            return;
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        g_controller = SDL_JoystickOpen(i);
+        if (g_controller) {
+            writeStartupLog("Raw joystick input opened");
+            return;
+        }
+    }
+    writeStartupLog("No SDL controller detected; waiting for hot-plug");
+}
+
+static bool controllerConnected()
+{
+    if (g_gameController && SDL_GameControllerGetAttached(g_gameController)) return true;
+    return g_controller && SDL_JoystickGetAttached(g_controller);
+}
+
+static void handleController(SDL_Event& event)
+{
+    if (event.type == SDL_CONTROLLERDEVICEADDED || event.type == SDL_JOYDEVICEADDED) {
+        openInputDevices();
+        return;
+    }
+    if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+        if (g_gameController &&
+            SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_gameController)) == event.cdevice.which) {
+            SDL_GameControllerClose(g_gameController);
+            g_gameController = nullptr;
+        }
+        openInputDevices();
+        return;
+    }
+    if (event.type == SDL_JOYDEVICEREMOVED) {
+        if (g_controller && SDL_JoystickInstanceID(g_controller) == event.jdevice.which) {
+            SDL_JoystickClose(g_controller);
+            g_controller = nullptr;
+        }
+        openInputDevices();
+        return;
+    }
+
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                moveSelection(-1);
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                moveSelection(1);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Cross.
+                activateSelection();
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Circle.
+                returnToPreviousScreen();
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    // A mapped GameController also emits raw joystick events. Ignore those
+    // to avoid processing the same physical press twice.
+    if (g_gameController) return;
+
+    // Raw SDL mappings: D-pad is usually a hat, sometimes buttons 13/14.
+    if (event.type == SDL_JOYHATMOTION && event.jhat.hat == 0) {
+        if (event.jhat.value & SDL_HAT_UP) moveSelection(-1);
+        else if (event.jhat.value & SDL_HAT_DOWN) moveSelection(1);
+        return;
+    }
     if (event.type != SDL_JOYBUTTONDOWN) return;
 
     switch (event.jbutton.button) {
-        case 13: // D-pad up on button-based mappings
+        case 13:
             moveSelection(-1);
             break;
-        case 14: // D-pad down on button-based mappings
+        case 14:
             moveSelection(1);
             break;
-        case 0: // Cross: select a discovered PC; transfer remains a separate future step.
-            if (g_selected >= 0 && g_senders[g_selected].used)
-                snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
+        case 0:
+            activateSelection();
             break;
-        case 1: // Circle: clear the selection.
-            g_selected = -1;
-            snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+        case 1:
+            returnToPreviousScreen();
             break;
         default:
             break;
@@ -493,9 +1256,9 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.1 startup");
+    writeStartupLog("AMEGA 0.2.2 startup");
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
         char message[256];
         snprintf(message, sizeof(message), "SDL_Init failed: %s", SDL_GetError());
         writeStartupLog(message);
@@ -562,9 +1325,12 @@ int main(int argc, char* argv[])
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_JoystickEventState(SDL_ENABLE);
-    if (SDL_NumJoysticks() > 0) g_controller = SDL_JoystickOpen(0);
+    SDL_GameControllerEventState(SDL_ENABLE);
+    openInputDevices();
 
     loadOrCreateReceiverId();
+    refreshLocalIp();
+    refreshFirmwareVersion();
     openDiscoverySocket();
     if (g_socket < 0)
         writeStartupLog("Discovery socket unavailable; UI remains active");
@@ -573,6 +1339,12 @@ int main(int argc, char* argv[])
     bool running = true;
     while (running) {
         pollNetwork();
+        reapDownloadThread();
+        const Uint32 networkNow = SDL_GetTicks();
+        if (networkNow - g_lastNetworkRefresh >= 5000) {
+            refreshLocalIp();
+            g_lastNetworkRefresh = networkNow;
+        }
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -585,7 +1357,14 @@ int main(int argc, char* argv[])
         SDL_Delay(33);
     }
 
+    if (g_downloadThread) {
+        g_downloadRuntime.cancel.store(true, std::memory_order_relaxed);
+        SDL_WaitThread(g_downloadThread, nullptr);
+        g_downloadThread = nullptr;
+    }
+    g_accessToken[0] = 0;
     if (g_socket >= 0) close(g_socket);
+    if (g_gameController) SDL_GameControllerClose(g_gameController);
     if (g_controller) SDL_JoystickClose(g_controller);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
