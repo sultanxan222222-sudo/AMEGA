@@ -156,8 +156,14 @@ internal sealed class SenderHost : IAsyncDisposable
             _receiverListener = listener;
 
             var token = _cancellation.Token;
-            _beaconTask = RunSenderBeaconLoopAsync(token);
-            _receiverListenTask = RunReceiverListenerAsync(listener, token);
+
+            // The discovery sweep can probe up to 4096 IPv4 hosts per adapter.
+            // Start both long-running loops on the thread pool: calling an async
+            // method directly executes its synchronous prefix on the WinForms UI
+            // thread until its first incomplete await, which used to freeze the
+            // window and make Search/Stop appear unresponsive during the sweep.
+            _beaconTask = Task.Run(() => RunSenderBeaconLoopAsync(token), token);
+            _receiverListenTask = Task.Run(() => RunReceiverListenerAsync(listener, token), token);
         }
         catch
         {
