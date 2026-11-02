@@ -13,8 +13,9 @@ SDK_DATA := $(TOOLCHAIN)/bin/data
 CXXFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -O2 \
   -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include \
   -isystem $(TOOLCHAIN)/include/c++/v1
-LIBS := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut \
-  -lScePad -lSceSysmodule -lSceFreeType -lSDL2
+LIBS := -lc -lkernel -lc++ -lxnet -lSceNet -lSceNetCtl \
+  -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
+  -lSceSysmodule -lSceFreeType -lSDL2
 
 .PHONY: all clean check-toolchain
 all: check-toolchain AMEGA-PS4.pkg
