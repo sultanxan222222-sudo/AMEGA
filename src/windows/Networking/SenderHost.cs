@@ -166,6 +166,7 @@ internal sealed class SenderHost : IAsyncDisposable
             {
                 listener.Client.ExclusiveAddressUse = false;
                 listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                listener.EnableBroadcast = true;
                 listener.Client.Bind(new IPEndPoint(IPAddress.Any, ReceiverDiscoveryPort));
                 _receiverListener = listener;
             }
@@ -194,12 +195,17 @@ internal sealed class SenderHost : IAsyncDisposable
 
     private async Task RunSenderBeaconLoopAsync(CancellationToken cancellationToken)
     {
+        var listener = _receiverListener
+            ?? throw new InvalidOperationException("The discovery listener is not initialized.");
         var beacon = new DiscoveryBeacon(
             "amega", 1, "sender_announcement", _senderId,
             _instanceNonce, DefaultHttpPort, Environment.MachineName);
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(beacon);
         DateTimeOffset lastSweep = DateTimeOffset.MinValue;
 
+        // Use the already-bound 38472 socket for both send and receive.
+        // Every PS4 reply is addressed to 38472, and the beacon now also
+        // originates from that same port instead of a transient UDP port.
         while (!cancellationToken.IsCancellationRequested)
         {
             DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -207,10 +213,9 @@ internal sealed class SenderHost : IAsyncDisposable
 
             if (_lanInterfaces.Count == 0)
             {
-                using var fallback = new UdpClient { EnableBroadcast = true };
                 try
                 {
-                    await fallback.SendAsync(payload, payload.Length,
+                    await listener.SendAsync(payload, payload.Length,
                         new IPEndPoint(IPAddress.Broadcast, SenderDiscoveryPort));
                 }
                 catch (SocketException) { }
@@ -222,11 +227,7 @@ internal sealed class SenderHost : IAsyncDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        using var udp = new UdpClient(new IPEndPoint(lan.Address, 0))
-                        {
-                            EnableBroadcast = true
-                        };
-                        await udp.SendAsync(payload, payload.Length,
+                        await listener.SendAsync(payload, payload.Length,
                             new IPEndPoint(lan.Broadcast, SenderDiscoveryPort));
 
                         if (runSweep)
@@ -237,7 +238,7 @@ internal sealed class SenderHost : IAsyncDisposable
                                 cancellationToken.ThrowIfCancellationRequested();
                                 try
                                 {
-                                    await udp.SendAsync(payload, payload.Length,
+                                    await listener.SendAsync(payload, payload.Length,
                                         new IPEndPoint(host, SenderDiscoveryPort));
                                 }
                                 catch (SocketException) { }
