@@ -443,14 +443,14 @@ internal sealed class MainForm : Form
         string amount = $"{FormatBytes(delivered)} / {FormatBytes(progress.TotalBytes)}";
 
         _rpiStatusLabel.Text = percent >= 100
-            ? $"Файл полностью отдан HTTP-запросам RPI ({amount}). PS4 ещё выполняет установку — проверь её экран."
+            ? $"HTTP-поток прочитал все диапазоны PKG для RPI ({amount}). Это не подтверждает получение всех байтов консолью или завершение установки."
             : delivered > 0
                 ? $"RPI запрашивает PKG с ПК: {percent}% ({amount}). Не закрывай AMEGA."
                 : "RPI принял задачу. Ожидаю запросы PKG от PS4...";
 
         if (percent >= 100)
             _statusLabel.Text =
-                "Все диапазоны PKG отданы HTTP-сервером AMEGA. Это подтверждает получение данных сервером, но не завершение установки на PS4.";
+                "HTTP-сервер AMEGA прочитал все диапазоны PKG для ответов RPI. Это не подтверждает получение всех байтов консолью и не означает завершение установки.";
     }
 
     private async void CheckRpiClicked(object? sender, EventArgs e)
