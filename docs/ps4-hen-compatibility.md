@@ -39,6 +39,18 @@ AMEGA rules:
 
 A TCP connection to port 12800 is not a health check. A current PC sender documents an application-level liveness request because the RPI event loop can stop responding while the TCP port still appears open. During active package downloads, the RPI API may also pause its progress responses; a sender should not falsely report a failed transfer just because a progress poll times out.
 
+### AMEGA development-branch RPI adapter
+
+The Windows application now has a separate **Проверить RPI** probe and **Установить через RPI** action:
+
+- It targets only the selected console and calls `POST /api/is_exists` on TCP 12800; the test uses the harmless dummy title ID `CUSA00000`, so a responding `status: fail` still demonstrates API liveness.
+- After a separate confirmation, it checks the PS4 PKG magic (`7F 43 4E 54`) and recomputes the selected file's whole SHA-256 before asking RPI to install.
+- It posts a direct package URL to `/api/install`. The local HTTP endpoint is restricted to the selected console's IPv4 address, supports Range/ETag, and expires after 12 hours.
+- The PC UI counts unique byte ranges read by HTTP responses; repeated/overlapping ranges are not counted twice. This is source-transfer coverage, not installation progress.
+- The install request may take up to 150 seconds while RPI reads PKG metadata. If the response is ambiguous or missing a task ID, AMEGA keeps the source open and tells the user not to submit the same PKG again until checking the console.
+
+This is only the Standalone RPI adapter. It does not implement GoldHEN's separate built-in Remote Package Install service. AMEGA still needs a real PS4 test and authoritative task-result polling before it can claim an installation is finished.
+
 Any RPI route requires correct HTTP Range handling: `206 Partial Content`, `Content-Range`, and `416` for an impossible range. A generic whole-file HTTP endpoint can break PKG metadata reads.
 
 ## Transfer and installation must remain separate
@@ -89,7 +101,7 @@ The current AMEGA receiver has its own HTTP Range download and receiver-side SHA
 
 Verified files are staged under /data/AMEGA/Download. Partial files are retained with resume metadata; the transfer ID is content-derived so the same package can resume after the PC app restarts. The receiver requests a fresh short-lived token after an explicit Accept action and never writes that token to the resume file.
 
-This is independent of the later installation step. AMEGA does not currently invoke a GoldHEN or RPI installer and does not install a received package automatically. Any future installer adapter must be detected at the application/API level and must report the actual task result.
+For optional installation, the Windows application can now invoke the separate Standalone RPI API after an additional confirmation. This adapter is not required for native AMEGA receiving and does not imply that GoldHEN's own Remote Package Install API is enabled. AMEGA does not yet claim installation completion: the current UI reports the RPI task ID when available and unique HTTP byte coverage served, but authoritative RPI task-result polling and real-console validation remain open.
 
 CI currently verifies the streaming SHA-256 implementation and a local Range-resume test that interrupts a 4,194,427-byte transfer after 600,000 bytes, then checks that the second request resumes from that exact byte offset and that the completed digest matches. CI does not prove filesystem permissions, runtime ABI behavior, or controller/network stability on a real PS4; those remain hardware validation requirements.
 
