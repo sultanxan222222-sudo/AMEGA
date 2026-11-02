@@ -336,7 +336,11 @@ internal sealed class MainForm : Form
             _offerSent = false;
             _offeredReceiverId = null;
             _sender.UpdateOffer(null, null);
-            await _sender.StartAsync();
+            // SenderHost.StartAsync performs adapter enumeration, Kestrel
+            // construction and socket binding before its first incomplete await.
+            // Run the whole startup off the WinForms UI thread so both buttons
+            // remain clickable while network services are being prepared.
+            await Task.Run(() => _sender.StartAsync());
             _isSearching = true;
             _startInProgress = false;
 
