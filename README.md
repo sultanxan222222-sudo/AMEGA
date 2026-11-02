@@ -17,6 +17,8 @@ The current development build implements the complete native PC-to-PS4 file-tran
 7. If the link drops, the partial file is preserved. Pressing Cross again resumes from the actual partial-file length.
 8. PS4 hashes the completed file independently. Only a matching SHA-256 is renamed to its final `.pkg` file.
 
+An optional Windows-side **Install through RPI** path is also present in the development branch. It checks the real Standalone Remote Package Installer API on the selected PS4, requires a second explicit confirmation, and gives RPI a temporary HTTP Range URL for the selected PKG. AMEGA shows the unique byte coverage served to RPI; 100% means the source file has been completely read by HTTP requests, **not** that PS4 installation has finished.
+
 ## Implemented in the prototype
 
 **Windows:** package picker, background SHA-256, LAN discovery, explicit target selection, receiver-bound offer, access-token gate, streamed HTTP file route with Range and ETag support.
@@ -29,10 +31,21 @@ The transfer ID is derived from the PKG's SHA-256, so the same package can resum
 
 ## What is not yet complete
 
-- No automatic or built-in package installation action is implemented. Transfer and installation remain separate.
-- No RPI / GoldHEN / FTP installer adapter is enabled yet.
-- Pairing code and authenticated encrypted transport are still required before calling the protocol secure on an untrusted network. Current HTTP is plaintext and intended only for a trusted private LAN.
-- Real-hardware testing on the user's PS4 Pro is still required. CI success and local mock-server tests do not prove the app works on every firmware, HEN build, router, or PS4 model.
+- A native AMEGA/GoldHEN installer is not implemented. The optional installer path uses the separate Standalone Remote Package Installer app (RPI) on TCP 12800; RPI must be installed and kept open in the PS4 foreground.
+- The RPI task is submitted and its task ID is reported when available. The current UI does not yet independently confirm the final INSTALLED state through RPI task polling; check the console before treating installation as complete.
+- GoldHEN's separate built-in Remote Package Install, FTP and BinLoader adapters are not enabled. HEN alone does not imply that Standalone RPI is installed or running.
+- Pairing code and authenticated encrypted transport are still required before calling the protocol secure on an untrusted network. Both native transfer and temporary RPI file hosting use plaintext HTTP on a trusted private LAN.
+- Real-hardware testing on the user's PS4 Pro is still required. CI success and local mock-server tests do not prove the apps work on the console, on every firmware, or through every router.
+
+## Optional Standalone RPI installation
+
+1. On PS4, install the separate Remote Package Installer homebrew and leave it open in the foreground. Its documented API listens on TCP 12800.
+2. In AMEGA for Windows, select the discovered console and press **Проверить RPI**.
+3. Select a PKG and press **Установить через RPI**. Review the target and filename and confirm.
+4. AMEGA temporarily shares only that selected PKG from the PC. RPI requests the file through HTTP Range. The Windows UI shows unique byte coverage served.
+5. Keep AMEGA open until RPI has finished downloading. At 100% byte coverage, the file has been read by the HTTP server, but the console may still be unpacking/installing it. Verify the final state on the PS4 before closing or removing the temporary source.
+
+If the API times out after an install request, AMEGA keeps the source open because the task may already have been accepted. Do not send the same package again until you have checked the PS4.
 
 ## Automated validation
 
@@ -49,7 +62,9 @@ These tests exercise the portable transfer module on the CI host; the PS4-specif
 - PS4 receiver built with OpenOrbis and SDL2.
 - Core native discovery and file transfer do not require optional GoldHEN FTP, BinLoader, or Remote Package Install services.
 - GoldHEN built-in Remote Package Install, standalone Remote Package Installer, FTP, internal `/data/pkg`, and experimental BinLoader are separate optional capabilities.
-- Installer adapters will be added only after application-level health checks and hardware validation.
+- Standalone RPI is an optional adapter: API readiness is checked with `POST /api/is_exists`, and installation is requested with `POST /api/install` only after confirmation.
+- The temporary RPI source is restricted to the selected console's IP, serves HTTP Range/ETag, and expires after 12 hours. Keep AMEGA open while RPI downloads.
+- GoldHEN built-in RPI, FTP and BinLoader remain separate adapter work; no such service is assumed from HEN detection.
 - Installation must always be a separate user-approved action.
 
 ## Engineering documents
@@ -61,6 +76,7 @@ These tests exercise the portable transfer module on the CI host; the PS4-specif
 - `docs/ps4-hen-compatibility.md` — firmware and installer compatibility.
 - `docs/open-source-research.md` — reference projects and licensing boundaries.
 - `docs/roadmap.md` — implementation stages and hardware acceptance criteria.
+- `docs/rpi-installation-adapter.md` — Standalone RPI setup, API behavior and safety limits.
 
 ## Release gate
 
