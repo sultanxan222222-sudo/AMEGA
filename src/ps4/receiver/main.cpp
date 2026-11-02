@@ -292,42 +292,46 @@ static bool httpJsonRequest(const char* ip, int port, const char* method,
     }
 
     const size_t bodyLength = body ? strlen(body) : 0;
-    char request[2048];
-    int requestLength = snprintf(request, sizeof(request),
-        "%s %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n"
-        "Accept: application/json\r\nUser-Agent: AMEGA-PS4/0.2.2\r\n"
-        "%s%s%s"
-        "%s"
-        "\r\n%s",
-        method, path, ip, port,
-        body ? "Content-Type: application/json\r\n" : "",
-        body ? "Content-Length: " : "",
-        body ? "" : "",
-        token ? "X-AMEGA-Token: " : "",
-        token ? token : "");
-    // Add the numeric length and the blank header separator separately.
-    if (requestLength < 0 || (size_t)requestLength >= sizeof(request) ||
-        bodyLength > 1024) {
+    if (bodyLength > 1024) {
         close(sock);
         return false;
     }
-    if (body) {
-        size_t used = (size_t)requestLength;
-        int extra = snprintf(request + used, sizeof(request) - used, "%zu\r\n\r\n", bodyLength);
-        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
-            close(sock);
-            return false;
-        }
-        requestLength += extra;
-    } else {
-        size_t used = (size_t)requestLength;
-        int extra = snprintf(request + used, sizeof(request) - used, "\r\n");
-        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
-            close(sock);
-            return false;
-        }
-        requestLength += extra;
+
+    char request[2048];
+    int requestLength = snprintf(request, sizeof(request),
+        "%s %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n"
+        "Accept: application/json\r\nUser-Agent: AMEGA-PS4/0.2.2\r\n",
+        method, path, ip, port);
+    if (requestLength < 0 || (size_t)requestLength >= sizeof(request)) {
+        close(sock);
+        return false;
     }
+
+    size_t used = (size_t)requestLength;
+    if (body) {
+        int extra = snprintf(request + used, sizeof(request) - used,
+            "Content-Type: application/json\r\nContent-Length: %zu\r\n", bodyLength);
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        used += (size_t)extra;
+    }
+    if (token) {
+        int extra = snprintf(request + used, sizeof(request) - used,
+            "X-AMEGA-Token: %s\r\n", token);
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        used += (size_t)extra;
+    }
+    int tail = snprintf(request + used, sizeof(request) - used, "\r\n");
+    if (tail < 0 || (size_t)tail >= sizeof(request) - used) {
+        close(sock);
+        return false;
+    }
+    requestLength = (int)(used + (size_t)tail);
 
     bool sent = sendAll(sock, request, (size_t)requestLength);
     if (sent && bodyLength > 0) sent = sendAll(sock, body, bodyLength);
