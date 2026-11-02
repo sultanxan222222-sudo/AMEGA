@@ -956,7 +956,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         drawText(renderer, 96, 320, "ФАЙЛ БУДЕТ СОХРАНЁН В AMEGA / DOWNLOAD", TEXT, 1);
         uint64_t received = g_downloadRuntime.bytes.load(std::memory_order_relaxed);
         char receivedLine[96] = {};
-        std::snprintf(receivedLine, sizeof(receivedLine), "УЖЕ ПОЛУЧЕНО: %.2f MB",
+        snprintf(receivedLine, sizeof(receivedLine), "УЖЕ ПОЛУЧЕНО: %.2f MB",
             static_cast<double>(received) / (1024.0 * 1024.0));
         drawText(renderer, 96, 370, receivedLine, MUTED, 1);
         drawText(renderer, 96, 420, "ПОСЛЕ ЗАГРУЗКИ AMEGA СВЕРИТ SHA-256", TEXT, 1);
@@ -975,7 +975,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         snprintf(progressLine, sizeof(progressLine), "ПОЛУЧЕНО: %d%%", percent);
         drawText(renderer, 96, 320, progressLine, TEXT, 2);
         char sizeLine[120] = {};
-        std::snprintf(sizeLine, sizeof(sizeLine), "%.2f MB ИЗ %.2f MB",
+        snprintf(sizeLine, sizeof(sizeLine), "%.2f MB ИЗ %.2f MB",
             static_cast<double>(received) / (1024.0 * 1024.0),
             static_cast<double>(total) / (1024.0 * 1024.0));
         drawText(renderer, 96, 375, sizeLine, MUTED, 1);
@@ -1076,19 +1076,6 @@ static void returnToPreviousScreen()
     if (g_screen == SCREEN_DOWNLOADING) {
         g_downloadRuntime.cancel.store(true, std::memory_order_relaxed);
         snprintf(g_status, sizeof(g_status), "ОСТАНОВКА. ЧАСТИЧНЫЙ ФАЙЛ СОХРАНЯЕТСЯ");
-        return;
-    }
-
-    g_screen = SCREEN_DISCOVERY;
-    g_accessToken[0] = 0;
-    snprintf(g_status, sizeof(g_status), "ВОЗВРАТ К СПИСКУ КОМПЬЮТЕРОВ");
-}
-
-static void returnToPreviousScreen()
-{
-    if (g_screen == SCREEN_DISCOVERY) {
-        g_selected = -1;
-        snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
         return;
     }
 
