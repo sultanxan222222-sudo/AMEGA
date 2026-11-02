@@ -10,13 +10,15 @@ internal sealed class RpiInstallerClient : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly int _port;
+    private readonly bool _allowLoopbackForTests;
 
-    public RpiInstallerClient(int port = 12800)
+    public RpiInstallerClient(int port = 12800, bool allowLoopbackForTests = false)
     {
         if (port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
 
         _port = port;
+        _allowLoopbackForTests = allowLoopbackForTests;
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
@@ -55,8 +57,12 @@ internal sealed class RpiInstallerClient : IDisposable
     {
         if (!Uri.TryCreate(packageUrl, UriKind.Absolute, out Uri? url) ||
             url.Scheme != Uri.UriSchemeHttp ||
-            string.IsNullOrWhiteSpace(url.Host))
-            return new RpiInstallResult(false, null, "Неверный локальный URL файла для RPI.");
+            url.HostNameType != UriHostNameType.IPv4 ||
+            url.Port != SenderHost.DefaultHttpPort ||
+            url.AbsolutePath != "/api/v1/rpi-file" ||
+            !IPAddress.TryParse(url.Host, out IPAddress? fileHost) ||
+            !IsPrivateIPv4(fileHost))
+            return new RpiInstallResult(false, null, "RPI разрешён только локальный URL AMEGA для выбранного PKG.");
 
         var reply = await PostAsync(consoleIp, "/api/install",
             new { type = "direct", packages = new[] { packageUrl } }, cancellationToken);
@@ -86,7 +92,7 @@ internal sealed class RpiInstallerClient : IDisposable
     {
         if (!IPAddress.TryParse(consoleIp, out IPAddress? address) ||
             address.AddressFamily != AddressFamily.InterNetwork ||
-            IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any))
+            (IPAddress.IsLoopback(address) && !_allowLoopbackForTests) || address.Equals(IPAddress.Any))
             return new RpiHttpReply(0, "Некорректный IPv4-адрес PS4.");
 
         var endpoint = new UriBuilder(Uri.UriSchemeHttp, address.ToString(), _port, path).Uri;
@@ -136,11 +142,31 @@ internal sealed class RpiInstallerClient : IDisposable
 
     private static bool TryReadStatus(string body, out string status)
     {
-        Match match = Regex.Match(body,
-            "\"status\"\\s*:\\s*\"(?<value>[a-zA-Z_]+)\"",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        status = match.Success ? match.Groups["value"].Value : string.Empty;
-        return match.Success;
+        status = string.Empty;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 8 });
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("status", out JsonElement value) ||
+                value.ValueKind != JsonValueKind.String)
+                return false;
+            status = value.GetString() ?? string.Empty;
+            return status.Length > 0 && status.Length <= 32;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPrivateIPv4(IPAddress address)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork) return false;
+        byte[] bytes = address.GetAddressBytes();
+        return bytes[0] == 10 ||
+            (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+            (bytes[0] == 192 && bytes[1] == 168) ||
+            (bytes[0] == 169 && bytes[1] == 254);
     }
 
     private static string FormatError(string body)
