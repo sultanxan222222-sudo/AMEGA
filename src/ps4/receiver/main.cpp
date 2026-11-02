@@ -38,7 +38,7 @@ static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
-static char g_localIp[INET_ADDRSTRLEN] = "НЕ ОПРЕДЕЛЁН";
+static char g_localIp[48] = "IP-UNKNOWN";
 static Uint32 g_lastBeacon = 0;
 static Uint32 g_nextSocketRetry = 0;
 static SDL_Joystick* g_controller = nullptr;
@@ -226,6 +226,8 @@ static void updateSender(const char* json, const sockaddr_in& from)
     snprintf(g_status, sizeof(g_status), "НАЙДЕН КОМПЬЮТЕР: %s", name);
 }
 
+static void openDiscoverySocket();
+
 static void pollNetwork()
 {
     const Uint32 now = SDL_GetTicks();
@@ -267,7 +269,7 @@ static void writeStartupLog(const char* message);
 
 static void refreshLocalIp()
 {
-    snprintf(g_localIp, sizeof(g_localIp), "НЕ ОПРЕДЕЛЁН");
+    snprintf(g_localIp, sizeof(g_localIp), "IP-UNKNOWN");
     struct ifaddrs* interfaces = nullptr;
     if (getifaddrs(&interfaces) != 0) {
         char message[160];
