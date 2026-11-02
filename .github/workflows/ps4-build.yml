@@ -7,6 +7,8 @@ on:
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
       - "tools/test_sha256.cpp"
+      - "tools/test_downloader.cpp"
+      - "tools/test_downloader.py"
       - "src/ps4/receiver/sha256.h"
       - ".github/workflows/ps4-build.yml"
   pull_request:
@@ -32,6 +34,9 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tools/test_sha256.cpp -o /tmp/amega-sha256-test
           /tmp/amega-sha256-test
+
+      - name: Test resumable HTTP Range download and receiver digest
+        run: python3 tools/test_downloader.py
 
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
