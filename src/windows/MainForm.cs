@@ -22,6 +22,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
     private string? _selectedFile;
     private string? _selectedHash;
+    private bool _isSearching;
 
     public MainForm()
     {
@@ -51,9 +52,7 @@ internal sealed class MainForm : Form
 
         ConfigureButton(_chooseButton, "Выбрать PKG", 30, 135, 170);
         ConfigureButton(_startButton, "Искать PS4", 215, 135, 170);
-        ConfigureButton(_stopButton, "Остановить", 400, 135, 150);
-        _startButton.Enabled = false;
-        _stopButton.Enabled = false;
+        ConfigureButton(_stopButton, "Остановить", 400, 135, 170);
 
         _fileLabel.SetBounds(32, 205, 740, 28);
         _sizeLabel.SetBounds(32, 239, 740, 25);
@@ -78,11 +77,11 @@ internal sealed class MainForm : Form
         _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
 
         _stageLabel.SetBounds(32, 465, 740, 42);
-        _stageLabel.Text = "Этап 1: двустороннее обнаружение в локальной сети.";
+        _stageLabel.Text = "Поиск PS4 можно запускать независимо от выбора и проверки PKG.";
         _stageLabel.ForeColor = Color.FromArgb(245, 190, 55);
 
         _statusLabel.SetBounds(32, 518, 740, 48);
-        _statusLabel.Text = "Готово к работе. Выберите PKG-файл.";
+        _statusLabel.Text = "Готово. Сначала можешь найти PS4 или выбрать PKG.";
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
@@ -97,6 +96,7 @@ internal sealed class MainForm : Form
         _startButton.Click += StartClicked;
         _stopButton.Click += StopClicked;
         FormClosing += FormIsClosing;
+        UpdateActionButtons();
     }
 
     private static void ConfigureButton(Button button, string text, int x, int y, int width)
@@ -104,10 +104,33 @@ internal sealed class MainForm : Form
         button.Text = text;
         button.SetBounds(x, y, width, 44);
         button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderColor = Color.FromArgb(245, 190, 55);
-        button.BackColor = Color.FromArgb(44, 49, 59);
+        button.FlatAppearance.BorderSize = 1;
+        button.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
         button.ForeColor = Color.White;
         button.Cursor = Cursors.Hand;
+    }
+
+    private void UpdateActionButtons()
+    {
+        _chooseButton.Enabled = true;
+        _startButton.Enabled = !_isSearching;
+        _stopButton.Enabled = _isSearching || _hashCts is not null;
+
+        StyleButton(_chooseButton, enabled: true, Color.FromArgb(55, 64, 78), Color.White);
+        StyleButton(_startButton, _startButton.Enabled, Color.FromArgb(245, 190, 55), Color.FromArgb(26, 29, 35));
+
+        _stopButton.Text = _isSearching && _hashCts is not null
+            ? "Отменить всё"
+            : _hashCts is not null ? "Отменить проверку" : "Остановить поиск";
+        StyleButton(_stopButton, _stopButton.Enabled, Color.FromArgb(190, 65, 58), Color.White);
+    }
+
+    private static void StyleButton(Button button, bool enabled, Color activeBack, Color activeFore)
+    {
+        button.BackColor = enabled ? activeBack : Color.FromArgb(48, 52, 60);
+        button.ForeColor = enabled ? activeFore : Color.FromArgb(125, 130, 140);
+        button.FlatAppearance.BorderColor = enabled ? activeBack : Color.FromArgb(65, 70, 78);
+        button.Cursor = enabled ? Cursors.Hand : Cursors.Default;
     }
 
     private async void ChooseFileClicked(object? sender, EventArgs e)
@@ -121,56 +144,73 @@ internal sealed class MainForm : Form
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
+        // A new selection supersedes any hash already in progress.
+        _hashCts?.Cancel();
         var path = dialog.FileName;
         var info = new FileInfo(path);
+        _selectedFile = path;
+        _selectedHash = null;
+        _sender.UpdateOffer(null, null);
+
         using var cts = new CancellationTokenSource();
         _hashCts = cts;
-        _chooseButton.Enabled = false;
-        _startButton.Enabled = false;
-        _stopButton.Enabled = true;
-        _stopButton.Text = "Отменить";
+
         _hashProgress.Value = 0;
         _hashProgress.Visible = true;
         _fileLabel.Text = $"Файл: {info.Name}";
         _sizeLabel.Text = $"Размер: {FormatBytes(info.Length)}";
-        _hashLabel.Text = "SHA-256: вычисляется…";
-        _statusLabel.Text = "Проверяю файл. Не закрывай программу — можно отменить.";
+        _hashLabel.Text = "SHA-256: вычисляется — поиск PS4 при этом может продолжаться.";
+        UpdateActionButtons();
+
+        int lastPercent = -1;
         var progress = new Progress<int>(value =>
         {
-            _hashProgress.Value = Math.Clamp(value, 0, 100);
-            _statusLabel.Text = $"Вычисляю SHA-256: {value}%";
+            int safeValue = Math.Clamp(value, 0, 100);
+            _hashProgress.Value = safeValue;
+            _hashLabel.Text = $"SHA-256: проверка файла — {safeValue}%";
         });
 
         try
         {
             var digest = await CalculateSha256Async(path, info.Length, progress, cts.Token);
-            _selectedFile = path;
+            if (!ReferenceEquals(_hashCts, cts) || !string.Equals(_selectedFile, path, StringComparison.OrdinalIgnoreCase))
+                return;
+
             _selectedHash = Convert.ToHexString(digest).ToLowerInvariant();
+            _sender.UpdateOffer(path, _selectedHash);
             _hashLabel.Text = $"SHA-256: {_selectedHash}";
             _hashProgress.Value = 100;
-            _startButton.Enabled = true;
-            _statusLabel.Text = "Файл проверен. Теперь можно нажать «Искать PS4».";
+            _statusLabel.Text = _isSearching
+                ? "PKG проверен. Поиск PS4 продолжается; предложение обновлено."
+                : "PKG проверен. Теперь можно запустить поиск PS4.";
         }
         catch (OperationCanceledException)
         {
-            _selectedFile = null;
-            _selectedHash = null;
-            _hashLabel.Text = "SHA-256: проверка отменена.";
-            _statusLabel.Text = "Проверка отменена. Выбери PKG ещё раз.";
+            if (ReferenceEquals(_hashCts, cts))
+            {
+                _selectedHash = null;
+                _sender.UpdateOffer(null, null);
+                _hashLabel.Text = "SHA-256: проверка отменена.";
+                _statusLabel.Text = "Проверка отменена. Можно выбрать другой PKG или продолжить поиск PS4.";
+            }
         }
         catch (Exception ex)
         {
-            _selectedFile = null;
-            _selectedHash = null;
-            _hashLabel.Text = "SHA-256: ошибка.";
-            _statusLabel.Text = $"Не удалось прочитать файл: {ex.Message}";
+            if (ReferenceEquals(_hashCts, cts))
+            {
+                _selectedHash = null;
+                _sender.UpdateOffer(null, null);
+                _hashLabel.Text = "SHA-256: ошибка.";
+                _statusLabel.Text = $"Не удалось прочитать файл: {ex.Message}";
+            }
         }
         finally
         {
-            if (ReferenceEquals(_hashCts, cts)) _hashCts = null;
-            _stopButton.Text = "Остановить";
-            _stopButton.Enabled = false;
-            _chooseButton.Enabled = true;
+            if (ReferenceEquals(_hashCts, cts))
+            {
+                _hashCts = null;
+                UpdateActionButtons();
+            }
         }
     }
 
@@ -180,44 +220,55 @@ internal sealed class MainForm : Form
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await using var stream = new FileStream(
             path, FileMode.Open, FileAccess.Read, FileShare.Read,
-            4 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var buffer = new byte[4 * 1024 * 1024];
+            8 * 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var buffer = new byte[8 * 1024 * 1024];
         long totalRead = 0;
+        int lastPercent = -1;
         int read;
-        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+
+        while ((read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false)) > 0)
         {
             hash.AppendData(buffer, 0, read);
             totalRead += read;
+
             if (fileLength > 0)
-                progress.Report((int)Math.Min(100L, totalRead * 100L / fileLength));
+            {
+                int percent = (int)Math.Min(100L, totalRead * 100L / fileLength);
+                if (percent != lastPercent)
+                {
+                    lastPercent = percent;
+                    progress.Report(percent);
+                }
+            }
         }
+
         cancellationToken.ThrowIfCancellationRequested();
         return hash.GetHashAndReset();
     }
 
     private async void StartClicked(object? sender, EventArgs e)
     {
-        if (_selectedFile is null || _selectedHash is null) return;
+        if (_isSearching) return;
 
         try
         {
-            _startButton.Enabled = false;
-            _chooseButton.Enabled = false;
+            _isSearching = true;
             _devices.Clear();
             _devicesList.Items.Clear();
             _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
-            _statusLabel.Text = "Запускаю двустороннее сетевое обнаружение…";
+            _statusLabel.Text = "Запускаю обнаружение. Выбор PKG и SHA-256 не блокируют поиск.";
+            UpdateActionButtons();
+
             await _sender.StartAsync(_selectedFile, _selectedHash);
             _deviceExpiryTimer.Start();
-            _stopButton.Enabled = true;
-            _statusLabel.Text = $"ПК отправляет запросы на UDP {SenderHost.SenderDiscoveryPort} и ждёт ответы на UDP {SenderHost.ReceiverDiscoveryPort}.";
-            _stageLabel.Text = $"Сеть: {_sender.NetworkSummary}. Directed broadcast и резервный поиск по адресам подсети активны.";
+            _statusLabel.Text = "Поиск запущен. Запусти AMEGA на PS4 и оставь обе программы открытыми.";
+            _stageLabel.Text = $"Сеть ПК: {_sender.NetworkSummary}. Ожидаю ответ PS4.";
         }
         catch (Exception ex)
         {
-            _startButton.Enabled = true;
-            _chooseButton.Enabled = true;
+            _isSearching = false;
             _statusLabel.Text = $"Не удалось запустить сетевой режим: {ex.Message}";
+            UpdateActionButtons();
         }
     }
 
@@ -249,7 +300,7 @@ internal sealed class MainForm : Form
         _devicesList.Items.Clear();
         if (_devices.Count == 0)
         {
-            _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
+            _devicesList.Items.Add("Пока приставки не найдены. Проверь одну Wi-Fi/LAN сеть и брандмауэр.");
             return;
         }
 
@@ -259,18 +310,20 @@ internal sealed class MainForm : Form
 
     private async void StopClicked(object? sender, EventArgs e)
     {
-        if (_hashCts is not null)
-        {
-            _hashCts.Cancel();
-            _statusLabel.Text = "Отменяю проверку файла…";
-            return;
-        }
-        await StopSenderAsync();
-        _statusLabel.Text = "Сетевой режим остановлен.";
+        bool wasHashing = _hashCts is not null;
+        _hashCts?.Cancel();
+        if (_isSearching)
+            await StopSenderAsync();
+
+        _statusLabel.Text = wasHashing && !_isSearching
+            ? "Отмена проверки и остановка поиска запрошены."
+            : "Сетевой поиск остановлен.";
+        UpdateActionButtons();
     }
 
     private async void FormIsClosing(object? sender, FormClosingEventArgs e)
     {
+        _hashCts?.Cancel();
         await StopSenderAsync();
         await _sender.DisposeAsync();
     }
@@ -278,11 +331,10 @@ internal sealed class MainForm : Form
     private async Task StopSenderAsync()
     {
         _deviceExpiryTimer.Stop();
+        _isSearching = false;
         try { await _sender.StopAsync(); }
         catch (Exception ex) { _statusLabel.Text = $"Ошибка остановки: {ex.Message}"; }
-        _stopButton.Enabled = false;
-        _startButton.Enabled = _selectedFile is not null;
-        _chooseButton.Enabled = true;
+        UpdateActionButtons();
     }
 
     private static string FormatBytes(long bytes)
