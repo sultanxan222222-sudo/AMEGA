@@ -414,7 +414,7 @@ internal sealed class SenderHost : IAsyncDisposable
             _rpiFileSize = file.Length;
             _rpiCoveredBytes = 0;
             _rpiServedRanges.Clear();
-            _rpiFileExpiresAt = DateTimeOffset.UtcNow.AddHours(4);
+            _rpiFileExpiresAt = DateTimeOffset.UtcNow.AddHours(12);
         }
 
         return $"http://{localAddress}:{DefaultHttpPort}/api/v1/rpi-file";
