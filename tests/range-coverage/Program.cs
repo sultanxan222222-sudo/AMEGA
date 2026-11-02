@@ -13,7 +13,9 @@ Require(coverage.CoveredBytes == 30, "overlapping interval must count shared byt
 coverage.Add(80, 40);
 Require(coverage.CoveredBytes == 50, "range must clamp at file end");
 coverage.Add(40, 40);
-Require(coverage.CoveredBytes == 100, "adjacent ranges should merge to full coverage");
+Require(coverage.CoveredBytes == 90, "adjacent ranges should merge without inventing missing bytes");
+coverage.Add(0, 10);
+Require(coverage.CoveredBytes == 100, "the final missing interval should complete full coverage");
 coverage.Add(-5, 20);
 coverage.Add(150, 10);
 coverage.Add(10, 0);
