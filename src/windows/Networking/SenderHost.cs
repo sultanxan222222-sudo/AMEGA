@@ -34,6 +34,7 @@ internal sealed class SenderHost : IAsyncDisposable
     private TransferOffer? _offer;
     private string? _offerFilePath;
     private string? _transferToken;
+    private string? _targetReceiverId;
     private DiscoveredReceiver? _acceptedReceiver;
     private DateTimeOffset _acceptedAt;
     private readonly object _stateLock = new();
@@ -43,7 +44,7 @@ internal sealed class SenderHost : IAsyncDisposable
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
     public bool IsRunning => _app is not null;
 
-    public void UpdateOffer(string? selectedFile, string? sha256)
+    public void UpdateOffer(string? selectedFile, string? sha256, string? targetReceiverId = null)
     {
         lock (_stateLock)
         {
@@ -53,9 +54,17 @@ internal sealed class SenderHost : IAsyncDisposable
             _transferToken = null;
             _acceptedReceiver = null;
             _acceptedAt = default;
+            _targetReceiverId = null;
 
             if (string.IsNullOrWhiteSpace(selectedFile) || string.IsNullOrWhiteSpace(sha256))
                 return;
+
+            if (!string.IsNullOrWhiteSpace(targetReceiverId))
+            {
+                if (!Guid.TryParse(targetReceiverId, out _))
+                    throw new ArgumentException("Target receiver ID must be a UUID.", nameof(targetReceiverId));
+                _targetReceiverId = targetReceiverId;
+            }
 
             if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
                 throw new ArgumentException("SHA-256 must contain 64 hexadecimal characters.", nameof(sha256));
@@ -285,6 +294,10 @@ internal sealed class SenderHost : IAsyncDisposable
 
         lock (_stateLock)
         {
+            if (_targetReceiverId is not null &&
+                !string.Equals(_targetReceiverId, receiver.ReceiverId, StringComparison.OrdinalIgnoreCase))
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+
             if (_offer is null || _offerFilePath is null)
                 return Results.Problem("No verified package is ready.", statusCode: 409);
 
