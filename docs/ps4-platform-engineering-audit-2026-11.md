@@ -25,10 +25,12 @@ The following is a research snapshot, not a promise that every combination has b
 
 | Firmware family | Publicly documented HEN status found | AMEGA policy |
 |---|---|---|
-| 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71, 11.00 | Listed by the public GoldHEN v2.4b18 pre-release | Build and test separately; query capabilities at run time |
-| 13.02, 13.04, 13.50 | SiSTRo's GoldHEN v2.4b18.12 is explicitly described as a beta adding these firmware versions | Treat as beta target; collect actual GoldHEN build and service status |
-| 13.52 | Browser-exploit / HEN reports and community builds exist, but the official SiSTRo beta page checked for this audit lists 13.02, 13.04 and 13.50 only | Do not claim official GoldHEN support without a verifiable build and hardware result |
-| 14.00 | BD-JB / HEN material is described as unstable; the consulted current guide says GoldHEN is not supported there | AMEGA core transfer must not require GoldHEN; do not enable GoldHEN-specific adapters on assumption alone |
+| 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71, 11.00 | Listed by the public GoldHEN v2.4b18 GitHub pre-release | Query actual services; validate each firmware/build combination |
+| 12.00, 12.02 | Scene-Collective PS4HEN v2.2.0 BETA README lists support through 12.02 and includes Remote Package Install | Treat as open-source HEN path, not GoldHEN; runtime-probe installer features |
+| 12.50, 12.52 | Community guides list exploit entry points, but the current HenJB matrix reports no shipped kernel patch for these versions | Do not infer HEN from an entry-point exploit; no compatibility claim until a tested payload is identified |
+| 13.02, 13.04, 13.50 | SiSTRo's v2.4b18.12 Ko-fi beta explicitly adds these firmware versions | GoldHEN beta target; record the exact beta build and probe services |
+| 13.52 | SiSTRo's separate v2.4b18.11 Ko-fi beta explicitly adds 13.52 only; a community exploit repository reports hardware testing with this build | GoldHEN beta target, distinct from v2.4b18.12; record the exact build and test hardware |
+| 14.00 | ConsoleMods currently describes an unstable BD-JB path and an open-source HEN with fewer features; GoldHEN is not supported. HenJB's browser-chain matrix says 14.00 is unavailable, while Scene-Collective has a source commit titled "Add 14.00 support" whose README still lists only 5.05–12.02 | Experimental / conflicting scene status. Do not enable GoldHEN-specific adapters; treat HEN as unverified until an actual receiver and service probe succeeds |
 | Above 14.00 | No compatible path was established by the sources reviewed for this audit | No compatibility claim |
 
 Important distinctions:
@@ -365,3 +367,44 @@ Current controller decision:
 - do not replace it with direct scePad structure access until we pin the v0.5.4 headers/library stubs, inspect exact OrbisPadData ABI, and run a USB/Bluetooth DS4 hardware test.
 
 Reference: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases
+
+
+
+## 10. Corrected late-2026 firmware details
+
+This section supersedes any earlier simplified statement in this audit that grouped all 13.0x GoldHEN builds together.
+
+- SiSTRo's own Ko-fi listing for **GoldHEN v2.4b18.11** says that beta specifically adds **13.52** and that support for other 13.xx firmwares would follow in the next days.
+- SiSTRo's own Ko-fi listing for **GoldHEN v2.4b18.12** says that beta adds **13.02, 13.04 and 13.50**.
+- The public GoldHEN GitHub v2.4b18 pre-release still lists firmware support only through 11.00. The 13.xx builds are separately announced beta builds; do not read the GitHub release list as a complete index of the Ko-fi beta releases.
+- The community `caziques/PS4` project records hardware test results for the 13.50 and 13.52 chains and specifically names GoldHEN 2.4b18.11 for 13.52. This is community test evidence, not a blanket certification for every PS4 model.
+- The public Scene-Collective `ps4-hen` README still says 5.05–12.02, although source commits exist for 13.52 and 14.00. Until a tagged build/release and repeatable hardware record are available, distinguish source-tree progress from a supported user release.
+- Public scene guides disagree about 14.00. The useful common ground is that any route described is experimental/limited, and GoldHEN is not a dependable assumption for 14.00. AMEGA's own transfer protocol should remain independent of GoldHEN.
+
+### Sony's own public source inventory
+
+Sony's PS4 Open Source Software page currently exposes WebKit snapshots through the 13.00 family. Its PS4 OSS inventory separately lists FreeBSD kernel/network components, Bonjour, cURL, OpenSSL, SQLite, cJSON, FreeType, zlib and other libraries. This is useful evidence about the underlying platform families, but it is **not** a public full PS4 SDK and does not prove that every listed component is linkable to an ordinary homebrew process.
+
+AMEGA should continue to prefer standard FreeBSD/POSIX sockets and file APIs already available in the OpenOrbis runtime. Bonjour/mDNS can be a future optional discovery fallback if a tested Windows-side counterpart is shipped; it must not replace the current protocol until multicast discovery is verified on real home routers.
+
+### Firmware version API and toolchain mismatch
+
+The current upstream OpenOrbis header declares `sceKernelGetSystemSwVersion(OrbisKernelSwVersion*)`, with a 0x28-byte result structure. The older `openorbisofficial/toolchain:latest` image currently used by AMEGA still declares the same import as a no-argument placeholder and omits the newer typedef. Branch 0.2.2 includes a local ABI compatibility struct and a typed function-pointer bridge to that import so the code can compile against this older container.
+
+This is a compatibility bridge based on the current upstream header, not yet a hardware-validated firmware detector. AMEGA must:
+- treat negative return codes or malformed version strings as "not detected";
+- display only the version string returned by the console, never infer it from model or exploit selection;
+- verify the returned value against System Information on physical hardware;
+- keep firmware reporting diagnostic only and never use it alone to enable an installer mode.
+
+References for this corrected section:
+- SiSTRo GoldHEN v2.4b18.11 (13.52): https://ko-fi.com/s/ccbe9f7bf0
+- SiSTRo GoldHEN v2.4b18.12 (13.02/13.04/13.50): https://ko-fi.com/s/85ea22bd2f
+- GoldHEN public GitHub v2.4b18 release: https://github.com/GoldHEN/GoldHEN/releases
+- PS4 13.50/13.52 community hardware test log: https://github.com/caziques/PS4
+- Current firmware overview: https://consolemods.org/wiki/Ps4_getting_started
+- HenJB firmware chain status: https://henjb.com/
+- Sony PS4 OSS inventory: https://www.playstation.com/en-us/oss/ps4/
+- Sony PS4 WebKit source snapshots: https://www.playstation.com/en-us/oss/ps4/webkit/
+- OpenOrbis latest releases: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases
+- OpenOrbis current kernel API header: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h
