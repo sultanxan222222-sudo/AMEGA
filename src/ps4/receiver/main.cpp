@@ -44,6 +44,8 @@ static SDL_Joystick* g_controller = nullptr;
 static SDL_GameController* g_gameController = nullptr;
 static Uint32 g_lastNetworkRefresh = 0;
 
+static void writeStartupLog(const char* message);
+
 static bool randomBytes(unsigned char* out, size_t size)
 {
     FILE* f = fopen("/dev/urandom", "rb");
