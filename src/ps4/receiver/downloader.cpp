@@ -143,6 +143,7 @@ static bool getFileSize(const char* path, uint64_t& size)
 
 static bool hasEnoughSpace(uint64_t remaining)
 {
+    if (remaining == 0) return true;
     struct statvfs info = {};
     if (statvfs(kDownloadDirectory, &info) != 0) return false;
     const uint64_t unit = info.f_frsize ? info.f_frsize : info.f_bsize;
