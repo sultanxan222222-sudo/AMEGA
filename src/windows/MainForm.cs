@@ -162,7 +162,6 @@ internal sealed class MainForm : Form
         _hashLabel.Text = "SHA-256: вычисляется — поиск PS4 при этом может продолжаться.";
         UpdateActionButtons();
 
-        int lastPercent = -1;
         var progress = new Progress<int>(value =>
         {
             int safeValue = Math.Clamp(value, 0, 100);
