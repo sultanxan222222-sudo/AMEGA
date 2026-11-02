@@ -95,6 +95,24 @@ internal sealed class RpiInstallerClient : IDisposable
         return new RpiInstallResult(true, taskId, $"RPI принял задачу №{taskId}.");
     }
 
+    public async Task<RpiTaskProgress?> GetTaskProgressAsync(
+        string consoleIp, long taskId, CancellationToken cancellationToken)
+    {
+        if (taskId < 0) return null;
+
+        // RPI shares a single-threaded event loop with its package HTTP server.
+        // During large downloads this endpoint can legitimately stop answering;
+        // use a short timeout and let the caller fall back to local Range coverage.
+        var reply = await PostAsync(consoleIp, "/api/get_task_progress",
+            new { task_id = taskId }, TimeSpan.FromSeconds(4), cancellationToken);
+
+        if (reply.StatusCode is < 200 or >= 300 ||
+            !RpiTaskProgressParser.TryParse(reply.Body, out RpiTaskProgress? progress))
+            return null;
+
+        return progress;
+    }
+
     private async Task<RpiHttpReply> PostAsync(
         string consoleIp, string path, object payload, TimeSpan requestTimeout,
         CancellationToken cancellationToken)
