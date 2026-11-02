@@ -10,13 +10,15 @@ A PS4 exploit, kernel patch, HEN payload, GoldHEN services, a separate RPI homeb
 
 | Firmware | Public evidence reviewed | AMEGA policy |
 |---|---|---|
-| 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71, 11.00 | Listed by the public GoldHEN v2.4b18 pre-release | Test each supported build on real hardware |
-| 13.02, 13.04, 13.50 | SiSTRo's GoldHEN v2.4b18.12 beta release description explicitly adds these firmwares | Treat as beta support, not stable upstream support |
-| 13.52 | Community reports / community builds exist; the SiSTRo beta description consulted for this snapshot names 13.02, 13.04 and 13.50, not 13.52 | No AMEGA compatibility claim until exact HEN build is verified |
-| 14.00 | Current BD-JB guide calls this path unstable and says GoldHEN is not supported there | Do not require GoldHEN for core discovery/transfer |
-| Later than 14.00 | No usable public HEN path established by sources reviewed for this snapshot | No compatibility claim |
+| 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71, 11.00 | Listed by the public GoldHEN v2.4b18 GitHub pre-release | Probe each service at runtime |
+| 12.00, 12.02 | Scene-Collective PS4HEN v2.2.0 BETA README lists support through 12.02, with Remote Package Install | Treat as open-source HEN, not GoldHEN; test the actual service |
+| 12.50, 12.52 | Some exploit entry points are documented, but current HenJB matrix reports no shipped kernel patch | Do not infer a running HEN from an entry-point exploit |
+| 13.02, 13.04, 13.50 | SiSTRo's own GoldHEN v2.4b18.12 beta adds these three firmwares | GoldHEN beta; record exact build |
+| 13.52 | SiSTRo's separate GoldHEN v2.4b18.11 beta specifically adds 13.52; community hardware test results exist | GoldHEN beta; record exact build |
+| 14.00 | BD-JB / open-source HEN activity is experimental and scene sources conflict; GoldHEN is not a reliable assumption | Core AMEGA networking must not depend on GoldHEN |
+| Later than 14.00 | No supported HEN path established by sources reviewed for this snapshot | No compatibility claim |
 
-Firmware exploit availability does not guarantee a stable GoldHEN build. GoldHEN support also does not guarantee that optional services are enabled.
+Firmware exploit availability does not guarantee a stable HEN payload. In particular, GoldHEN 2.4b18.11 and 2.4b18.12 are separate beta builds for different 13.xx firmware groups. GoldHEN support also does not guarantee that optional services are enabled.
 
 ## GoldHEN capabilities
 
@@ -60,3 +62,24 @@ OpenOrbis headers provide networking APIs, `sceNetCtl` network information, `sce
 ## Hardware validation record required
 
 Record exact console model, firmware, HEN name/version/build, enabled services, RPI app state, Ethernet/Wi-Fi, router isolation settings, test file size, launch/exit, controller input, discovery, transfer/resume, digest and installation result. A CI compile is not a hardware pass.
+
+## New receiver diagnostics in AMEGA 0.2.2
+
+The PS4 receiver now:
+- displays its own detected local IPv4 address;
+- attempts to read the system software version through the documented current OpenOrbis sceKernelGetSystemSwVersion ABI;
+- includes that version as an optional firmware_version field in its UDP announcement;
+- lets the Windows UI show the reported firmware beside the discovered console.
+
+The bundled OpenOrbis build container has an older no-argument placeholder declaration for this import. The source uses a local ABI struct and a typed function-pointer bridge based on current upstream OpenOrbis headers. CI compilation passes, but the call is **not hardware-validated yet**. If it returns an error or malformed value, the receiver shows 'не определена'; AMEGA never guesses firmware from model or jailbreak method.
+
+This is diagnostic information only. The actual installer mode still must be detected using an application-level API or explicit user selection.
+
+## Primary firmware references
+
+- SiSTRo GoldHEN v2.4b18.11 (13.52 beta): https://ko-fi.com/s/ccbe9f7bf0
+- SiSTRo GoldHEN v2.4b18.12 (13.02 / 13.04 / 13.50 beta): https://ko-fi.com/s/85ea22bd2f
+- GoldHEN public GitHub v2.4b18 feature list / supported firmware: https://github.com/GoldHEN/GoldHEN/releases
+- Community hardware test details for 13.50 and 13.52: https://github.com/caziques/PS4
+- Current PS4 firmware entry-point status: https://consolemods.org/wiki/Ps4_getting_started
+- Firmware chain status: https://henjb.com/
