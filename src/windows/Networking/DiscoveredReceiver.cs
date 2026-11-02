@@ -5,6 +5,7 @@ internal sealed record DiscoveredReceiver(
     string DisplayName,
     string IpAddress,
     string Version,
+    string InstanceNonce,
     DateTimeOffset LastSeen)
 {
     public string DisplayLabel => $"{DisplayName} — {IpAddress} — v{Version}";
