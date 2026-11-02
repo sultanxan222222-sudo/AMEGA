@@ -1,72 +1,104 @@
 # AMEGA LAN protocol — version 1
 
-Status: design baseline. Implementations must validate every field and reject unknown major versions.
+Status: discovery plus Windows-side authorization/file-serving foundation. The PS4 client has not yet implemented the accept/download calls, so end-to-end transfer is not complete.
 
 ## 1. Transport
 
-- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472. The distinct ports avoid competing wildcard binds.
-- Control and data: HTTP over the local network in the first development milestone.
-- Production hardening: authenticated HTTPS or an authenticated encrypted session established during pairing. Plain HTTP must not be treated as secure on untrusted networks.
-- All messages are UTF-8 JSON unless the endpoint explicitly serves binary file data.
+- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472.
+- Control and data: HTTP on the trusted home LAN; Windows HTTP service uses TCP 38471.
+- Plain HTTP is not secure on an untrusted network. Do not expose the service to the public Internet or a guest Wi-Fi network.
+- Messages are UTF-8 JSON unless an endpoint explicitly serves binary file data.
 - Maximum discovery datagram: 1,200 bytes.
-
-Initial development defaults: UDP 38470 and HTTP 38471. These are configurable implementation defaults, not protocol constants.
 
 ## 2. Bidirectional discovery
 
-Discovery is a challenge/reply exchange:
+- Windows broadcasts sender announcements on UDP 38470 using each active adapter's actual subnet broadcast address; it also performs a bounded unicast sweep every 15 seconds.
+- PS4 listens on UDP 38470 and replies to the observed PC address on UDP 38472.
+- A reply includes the PS4 receiver UUID, a 32-character per-launch nonce, display name, receiver version, and the PC nonce echoed in reply_to_nonce.
+- Windows accepts a reply only if its UUID and nonce are valid and reply_to_nonce matches the current PC process nonce.
+- Windows stores the receiver's latest nonce and IP for a short-lived accept request.
 
-- Windows sends `sender_announcement` beacons to PS4 UDP 38470, using each active adapter's actual IPv4 subnet broadcast address. It also performs a bounded unicast sweep of each subnet every 15 seconds as a fallback when an access point drops broadcasts.
-- PS4 listens on UDP 38470 and immediately replies to the sender's observed source IP at Windows UDP 38472. The reply matches `protocol/schemas/receiver-discovery-v1.schema.json` and echoes the active PC `instance_nonce` in `reply_to_nonce`.
-- Windows accepts only a response with the current process nonce, a valid receiver UUID, a 32-character hexadecimal instance nonce, and bounded display fields. This rejects stale replies from a previous PC process.
+Discovery is unauthenticated and grants no access. It contains no local file path, package contents, token, or hardware serial. Client isolation, VLAN separation, and host firewalls may still block peer traffic.
 
-The Windows app listens for receiver announcements; the PS4 app listens for sender announcements. Each beacon includes a random installation ID, a fresh per-launch nonce, protocol major version, and display name. The sender announcement also includes the active HTTP port.
+## 3. Offer metadata
 
-Discovery is unauthenticated and grants no access. It contains no file path, package contents, authentication secret, or hardware serial. Networks with client isolation, guest Wi-Fi, VLAN separation, or host firewalls may block peer traffic. A bounded subnet sweep can bypass broadcast suppression, but it cannot bypass client isolation or firewall rules.
+When a PKG is selected and its whole-file SHA-256 is complete, Windows exposes:
+- random transfer_id;
+- sender_id;
+- display filename (never a local absolute path);
+- exact file_size;
+- file_kind;
+- whole-file SHA-256;
+- creation time and protocol major version.
 
-## 3. Pairing and offer
+GET /api/v1/offer returns 409 until a verified offer is ready. GET /api/v1/health exposes offer_ready and receiver_authorized.
 
-The receiver selects a sender and starts a pairing request. The sender displays a short-lived one-time code; the receiver asks the user to confirm the same code. A successful pairing creates a random session token with limited lifetime and scope.
+## 4. Windows-side accept gate and binary file route
 
-After pairing, the sender exposes an offer containing:
-- random `transfer_id`;
-- safe display filename;
-- exact byte size;
-- package kind (`pkg` or `test_file`);
-- SHA-256 digest;
-- creation time and protocol version.
+The Windows sender currently implements the server side of this stage.
 
-The offer is metadata only. No payload moves until the receiver explicitly accepts it.
+### POST /api/v1/accept
 
-## 4. Transfer endpoints
+Request JSON:
 
-The concrete route names are reserved for the implementation and must remain under a versioned prefix such as `/api/v1/`.
+```json
+{
+  "transfer_id": "current offer UUID",
+  "receiver_id": "discovered PS4 UUID",
+  "instance_nonce": "32 hexadecimal characters from latest PS4 beacon",
+  "reply_to_nonce": "current PC process nonce"
+}
+```
 
-Required behavior:
-- Fetch offer metadata for a transfer.
-- Accept or decline a transfer.
-- Fetch file bytes with HTTP Range support.
-- Query transfer status and resume offset.
-- Acknowledge final receiver-side verification.
+Validation:
+- transfer_id must match the current offer;
+- receiver_id and instance_nonce must match a receiver discovered within the last 15 seconds;
+- reply_to_nonce must match the current Windows process nonce;
+- only one receiver may hold an active token for the current offer.
 
-Range semantics must follow HTTP byte ranges. A resumed request must validate the returned `Content-Range`; a server must not silently return the wrong bytes. Partial responses use HTTP 206. Invalid or unsatisfiable ranges must return the correct error status.
+Successful response includes accepted=true, transfer_id, a cryptographically random 256-bit access_token, and an expiry of 1,800 seconds. A new offer, stop, or expiry revokes the token.
 
-## 5. Resume rules
+**Important:** this endpoint is a server-side foundation. The PS4 application does not yet make this request; therefore an actual user Accept action and a completed transfer are not implemented yet.
 
-The receiver persists transfer ID, expected file size, expected SHA-256, safe destination, and verified byte count. After reconnecting, it asks the sender for transfer status and continues from the last safely persisted offset.
+### GET or HEAD /api/v1/file
 
-The receiver must not trust a locally stored offset by itself. It validates the partial file length and re-hashes the final complete file. If metadata differs, the partial file is quarantined or discarded only after user-safe cleanup rules are applied.
+The route is unavailable until POST /api/v1/accept succeeds. Requests must include:
+- header X-AMEGA-Token with the short-lived token;
+- source IP matching the PS4 receiver that was authorized.
 
-## 6. Integrity and completion
+The route streams the selected file from disk; it does not load the whole PKG into RAM. It supports HTTP byte ranges through the ASP.NET Core file result:
+- a valid range returns 206 Partial Content and Content-Range;
+- an unsatisfiable range returns 416;
+- a complete GET returns 200;
+- ETag is set to the whole-file SHA-256.
 
-SHA-256 is computed from the complete received file. The sender's digest is compared with the receiver's digest. A transfer becomes `COMPLETE` only after equality and a final acknowledgement.
+The receiver must still validate every Content-Range response and independently hash the full received file before marking it complete.
 
-A mismatch results in `FAILED_INTEGRITY`; the file must not be offered for installation.
+## 5. Remaining transfer behavior
 
-## 7. Error model
+Not yet implemented end-to-end:
+- PS4 offer polling and user-facing Accept / Decline;
+- PS4 token request and range-download client;
+- safe staging directory and free-space reservation;
+- persistent resume metadata;
+- receiver-side SHA-256 verification and final acknowledgement;
+- transfer status, speed, pause, cancel, and resume endpoints.
 
-Errors use stable machine-readable codes, a human-readable message, and a retryable flag. Do not expose local absolute paths, secrets, or stack traces to the network peer.
+A transfer becomes COMPLETE only after the receiver confirms exact byte length and matching whole-file SHA-256. Installation is a separate action and must never start automatically.
+
+## 6. Security limitations
+
+The current accept gate checks receiver ID, fresh discovery nonce, PC nonce echo, source IP, token entropy, token lifetime, and single-receiver scope. This is a useful local-LAN access gate, not production authentication:
+- discovery and HTTP control/data are still plaintext;
+- a device able to monitor or spoof traffic on the same LAN may be able to interfere;
+- the shared discovery nonce is not a secret.
+
+Before a public/release build, add a user-visible pairing confirmation/code with rate limits and authenticated encrypted transport (TLS with correctly validated identity or an authenticated secure session). Do not claim the current prototype is secure on an untrusted network.
+
+## 7. Resume and integrity rules
+
+The receiver should persist transfer ID, expected size, SHA-256, safe destination, and verified byte offset. A resume request must validate the returned range and actual partial-file length. The final complete file must be hashed again; a mismatched digest results in FAILED_INTEGRITY and must not be offered for installation.
 
 ## 8. Compatibility policy
 
-Minor additions may be optional. A breaking change requires a new major protocol version. Both apps show a clear incompatibility message rather than attempting an unsafe downgrade.
+Minor additions may be optional. A breaking change requires a new major protocol version. Both apps must show a clear incompatibility message rather than attempting an unsafe downgrade.
