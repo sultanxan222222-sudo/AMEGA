@@ -5,6 +5,7 @@ on:
     paths:
       - "src/windows/**"
       - "tests/range-coverage/**"
+      - "tests/windows-ui/**"
       - ".github/workflows/windows-build.yml"
   pull_request:
     paths:
@@ -30,6 +31,9 @@ jobs:
 
       - name: Test HTTP Range progress accounting
         run: dotnet run --project tests/range-coverage/RangeCoverage.Tests.csproj -c Release
+
+      - name: Exercise WinForms Search, Stop and Restart buttons
+        run: dotnet run --project tests/windows-ui/WindowsUi.Tests.csproj -c Release
 
       - name: Publish self-contained Windows x64 app
         run: >
