@@ -177,7 +177,13 @@ static void refreshFirmwareVersion()
 {
     OrbisKernelSwVersion version = {};
     version.Size = sizeof(version);
-    const int32_t result = sceKernelGetSystemSwVersion(&version);
+    // The bundled OpenOrbis container has the same import symbol but an
+    // older no-argument placeholder declaration. Use the ABI recorded by
+    // current upstream OpenOrbis headers without changing the imported NID.
+    using GetSystemSwVersionFn = int32_t (*)(OrbisKernelSwVersion*);
+    const auto getSystemSwVersion =
+        reinterpret_cast<GetSystemSwVersionFn>(&sceKernelGetSystemSwVersion);
+    const int32_t result = getSystemSwVersion(&version);
     if (result < 0) {
         snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
         writeStartupLog("sceKernelGetSystemSwVersion unavailable");
