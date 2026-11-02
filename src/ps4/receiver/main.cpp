@@ -41,6 +41,8 @@ static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
 static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
+static SDL_GameController* g_gameController = nullptr;
+static Uint32 g_lastNetworkRefresh = 0;
 
 static bool randomBytes(unsigned char* out, size_t size)
 {
@@ -423,8 +425,9 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
     drawText(renderer, 64, 555, g_status, GREEN, 1);
     drawText(renderer, 64, 590, "IP PS4:", TEXT, 1);
     drawText(renderer, 160, 590, g_localIp, MUTED, 1);
-    drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
-    drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
+    drawText(renderer, 64, 620, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
+    drawText(renderer, 64, 645, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
+    drawText(renderer, 64, 685, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
     if (surfaceRenderer)
         SDL_UpdateWindowSurface(window);
@@ -443,32 +446,115 @@ static void moveSelection(int direction)
     }
 }
 
+static void openInputDevices()
+{
+    if (g_gameController && SDL_GameControllerGetAttached(g_gameController)) return;
+    if (g_gameController) {
+        SDL_GameControllerClose(g_gameController);
+        g_gameController = nullptr;
+    }
+    if (g_controller) {
+        SDL_JoystickClose(g_controller);
+        g_controller = nullptr;
+    }
+
+    // Prefer SDL's standardized game-controller mapping (Cross=A, Circle=B,
+    // D-pad buttons). Fall back to raw joystick events for unusual mappings.
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        g_gameController = SDL_GameControllerOpen(i);
+        if (g_gameController) {
+            writeStartupLog("GameController input opened");
+            return;
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        g_controller = SDL_JoystickOpen(i);
+        if (g_controller) {
+            writeStartupLog("Raw joystick input opened");
+            return;
+        }
+    }
+    writeStartupLog("No SDL controller detected; waiting for hot-plug");
+}
+
+static bool controllerConnected()
+{
+    if (g_gameController && SDL_GameControllerGetAttached(g_gameController)) return true;
+    return g_controller && SDL_JoystickGetAttached(g_controller);
+}
+
 static void handleController(SDL_Event& event)
 {
-    // SDL reports a DualShock D-pad as a hat on most controller mappings.
-    // Keep the button fallback for mappings that expose it as buttons.
-    if (event.type == SDL_JOYHATMOTION && event.jhat.hat == 0) {
-        if (event.jhat.value & SDL_HAT_UP)
-            moveSelection(-1);
-        else if (event.jhat.value & SDL_HAT_DOWN)
-            moveSelection(1);
+    if (event.type == SDL_CONTROLLERDEVICEADDED || event.type == SDL_JOYDEVICEADDED) {
+        openInputDevices();
+        return;
+    }
+    if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+        if (g_gameController &&
+            SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_gameController)) == event.cdevice.which) {
+            SDL_GameControllerClose(g_gameController);
+            g_gameController = nullptr;
+        }
+        openInputDevices();
+        return;
+    }
+    if (event.type == SDL_JOYDEVICEREMOVED) {
+        if (g_controller && SDL_JoystickInstanceID(g_controller) == event.jdevice.which) {
+            SDL_JoystickClose(g_controller);
+            g_controller = nullptr;
+        }
+        openInputDevices();
         return;
     }
 
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                moveSelection(-1);
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                moveSelection(1);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Cross on the standard PlayStation mapping.
+                if (g_selected >= 0 && g_senders[g_selected].used)
+                    snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Circle.
+                g_selected = -1;
+                snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    // A mapped GameController also emits raw joystick events. Ignore those
+    // to avoid processing the same physical press twice.
+    if (g_gameController) return;
+
+    // Raw SDL mappings: D-pad is usually a hat, sometimes buttons 13/14.
+    if (event.type == SDL_JOYHATMOTION && event.jhat.hat == 0) {
+        if (event.jhat.value & SDL_HAT_UP) moveSelection(-1);
+        else if (event.jhat.value & SDL_HAT_DOWN) moveSelection(1);
+        return;
+    }
     if (event.type != SDL_JOYBUTTONDOWN) return;
 
     switch (event.jbutton.button) {
-        case 13: // D-pad up on button-based mappings
+        case 13:
             moveSelection(-1);
             break;
-        case 14: // D-pad down on button-based mappings
+        case 14:
             moveSelection(1);
             break;
-        case 0: // Cross: select a discovered PC; transfer remains a separate future step.
+        case 0:
             if (g_selected >= 0 && g_senders[g_selected].used)
                 snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
             break;
-        case 1: // Circle: clear the selection.
+        case 1:
             g_selected = -1;
             snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
             break;
@@ -591,7 +677,8 @@ int main(int argc, char* argv[])
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_JoystickEventState(SDL_ENABLE);
-    if (SDL_NumJoysticks() > 0) g_controller = SDL_JoystickOpen(0);
+    SDL_GameControllerEventState(SDL_ENABLE);
+    openInputDevices();
 
     loadOrCreateReceiverId();
     refreshLocalIp();
@@ -603,6 +690,11 @@ int main(int argc, char* argv[])
     bool running = true;
     while (running) {
         pollNetwork();
+        const Uint32 networkNow = SDL_GetTicks();
+        if (networkNow - g_lastNetworkRefresh >= 5000) {
+            refreshLocalIp();
+            g_lastNetworkRefresh = networkNow;
+        }
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -616,6 +708,7 @@ int main(int argc, char* argv[])
     }
 
     if (g_socket >= 0) close(g_socket);
+    if (g_gameController) SDL_GameControllerClose(g_gameController);
     if (g_controller) SDL_JoystickClose(g_controller);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
