@@ -1,6 +1,6 @@
 # AMEGA LAN protocol — version 1
 
-Status: discovery plus Windows-side authorization/file-serving foundation. The PS4 client has not yet implemented the accept/download calls, so end-to-end transfer is not complete.
+Status: bidirectional discovery plus explicit PC Send / PS4 Accept handshake. Windows authorization and Range-capable file serving are implemented; PS4 offer retrieval and accept are implemented. PS4 file download, staging, resume and receiver-side digest verification are still not implemented, so end-to-end transfer is not complete.
 
 ## 1. Transport
 
@@ -35,7 +35,7 @@ GET /api/v1/offer returns 409 until a verified offer is ready. GET /api/v1/healt
 
 ## 4. Windows-side accept gate and binary file route
 
-The Windows sender currently implements the server side of this stage.
+The Windows sender currently implements the server side of this stage. An outgoing offer is created only after the PC user selects a discovered PS4 and presses Send PKG. The offer is bound to that receiver UUID; changing the target revokes the previous offer and token.
 
 ### POST /api/v1/accept
 
@@ -58,7 +58,7 @@ Validation:
 
 Successful response includes accepted=true, transfer_id, a cryptographically random 256-bit access_token, and an expiry of 1,800 seconds. A new offer, stop, or expiry revokes the token.
 
-**Important:** this endpoint is a server-side foundation. The PS4 application does not yet make this request; therefore an actual user Accept action and a completed transfer are not implemented yet.
+**PS4 client behavior now implemented:** when the user selects a PC and presses Cross, the receiver requests GET /api/v1/offer and displays the filename, size and SHA-256. A second Cross on the offer screen sends POST /api/v1/accept using the receiver UUID, receiver nonce, and the selected PC nonce. The PS4 stores the returned access token in memory and shows an Accepted state. Circle returns to the previous screen. The PS4 does not yet issue GET /api/v1/file, so the file is not downloaded by this handshake alone.
 
 ### GET or HEAD /api/v1/file
 
@@ -77,10 +77,9 @@ The receiver must still validate every Content-Range response and independently 
 ## 5. Remaining transfer behavior
 
 Not yet implemented end-to-end:
-- PS4 offer polling and user-facing Accept / Decline;
-- PS4 token request and range-download client;
+- PS4 range-download client using X-AMEGA-Token and validated Content-Range;
 - safe staging directory and free-space reservation;
-- persistent resume metadata;
+- persistent resume metadata and retry behavior;
 - receiver-side SHA-256 verification and final acknowledgement;
 - transfer status, speed, pause, cancel, and resume endpoints.
 
