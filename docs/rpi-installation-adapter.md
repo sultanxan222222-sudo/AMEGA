@@ -47,7 +47,7 @@ The RPI API may stop answering progress polls while it is servicing a large file
 - 100% means every file byte has been read by the HTTP response stream at least once.
 - 100% does **not** mean the title is fully installed. RPI may still be verifying, unpacking or installing on the PS4.
 
-Final task progress polling and authoritative `INSTALLED` / `FAILED` UI states are still open work. Until that exists, the user must verify the final result on the console.
+When RPI returns a task ID, AMEGA now polls `POST /api/get_task_progress` at a conservative interval with a short timeout. It reads the console's `transferred_total`, `length_total`, `preparing_percent`, `local_copy_percent`, and error result. If the single-threaded RPI API is busy serving the PKG and does not answer, AMEGA falls back to unique HTTP source coverage and retries later. It reports completion only when RPI reports the full byte count and `local_copy_percent` reaches 100%. This is an API-reported task completion state, not a physical-console validation; the user should still check the PS4 screen.
 
 ## Error handling
 
