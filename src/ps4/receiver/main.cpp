@@ -721,9 +721,29 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
 
     if (unicastTarget) {
         sockaddr_in target = *unicastTarget;
+        const uint16_t originalPort = target.sin_port;
+
+        // Primary reply: the documented fixed Windows discovery listener.
         target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
-        sendto(g_socket, payload, strlen(payload), 0,
-            reinterpret_cast<sockaddr*>(&target), sizeof(target));
+        if (sendto(g_socket, payload, strlen(payload), 0,
+            reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) {
+            char message[96];
+            snprintf(message, sizeof(message), "Unicast discovery reply failed: errno=%d", errno);
+            writeStartupLog(message);
+        }
+
+        // Compatibility reply: also answer the datagram's actual source port.
+        // Older/alternate PC builds may listen on the ephemeral port they used
+        // to send the beacon. Current Windows AMEGA listens on 38472.
+        if (originalPort != htons(RECEIVER_DISCOVERY_PORT)) {
+            target.sin_port = originalPort;
+            if (sendto(g_socket, payload, strlen(payload), 0,
+                reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) {
+                char message[96];
+                snprintf(message, sizeof(message), "Compatibility discovery reply failed: errno=%d", errno);
+                writeStartupLog(message);
+            }
+        }
         return;
     }
 
@@ -795,9 +815,9 @@ static void updateSender(const char* json, const sockaddr_in& from)
     entry.used = true;
     snprintf(g_lastSenderNonce, sizeof(g_lastSenderNonce), "%s", nonce);
 
-    sockaddr_in reply = from;
-    reply.sin_port = htons(RECEIVER_DISCOVERY_PORT);
-    sendAnnouncement(&reply);
+    // Preserve the sender's source port. sendAnnouncement also emits the
+    // fixed-port reply used by current AMEGA Windows builds.
+    sendAnnouncement(&from);
 
     if (g_selected < 0) g_selected = slot;
     snprintf(g_status, sizeof(g_status), "НАЙДЕН КОМПЬЮТЕР: %s", name);
