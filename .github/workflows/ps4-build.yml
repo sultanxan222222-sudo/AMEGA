@@ -33,7 +33,7 @@ jobs:
           docker run --rm --user 0:0 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/src/ps4 \
-            openorbisofficial/toolchain:latest \
+            openorbisofficial/toolchain@sha256:f752d09f9d3227c729ee069f29a05450bd8fa4ef5e785c0929ab8479f7dc4e64 \
             bash -lc 'make clean'
 
       - name: Generate GP4 manifest
@@ -48,7 +48,7 @@ jobs:
           docker run --rm --user 0:0 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace/src/ps4 \
-            openorbisofficial/toolchain:latest \
+            openorbisofficial/toolchain@sha256:f752d09f9d3227c729ee069f29a05450bd8fa4ef5e785c0929ab8479f7dc4e64 \
             bash -lc 'make all'
 
       - name: Upload PS4 package
