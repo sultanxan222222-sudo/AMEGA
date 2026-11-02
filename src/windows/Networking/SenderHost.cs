@@ -39,6 +39,11 @@ internal sealed class SenderHost : IAsyncDisposable
     private DateTimeOffset _acceptedAt;
     private readonly object _stateLock = new();
     private readonly ConcurrentDictionary<string, DiscoveredReceiver> _discoveredReceivers = new(StringComparer.OrdinalIgnoreCase);
+    private string? _rpiFilePath;
+    private string? _rpiFileName;
+    private string? _rpiSha256;
+    private string? _rpiReceiverIp;
+    private DateTimeOffset _rpiFileExpiresAt;
 
     public event Action<DiscoveredReceiver>? ReceiverDiscovered;
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
@@ -134,6 +139,8 @@ internal sealed class SenderHost : IAsyncDisposable
         app.MapPost("/api/v1/accept", (HttpContext context, AcceptTransferRequest request) => AcceptTransfer(context, request));
         app.MapMethods("/api/v1/file", new[] { HttpMethods.Get, HttpMethods.Head },
             (HttpContext context) => ServeAuthorizedFile(context));
+        app.MapMethods("/api/v1/rpi-file", new[] { HttpMethods.Get, HttpMethods.Head },
+            (HttpContext context) => ServeRpiFile(context));
 
         await app.StartAsync();
         _app = app;
@@ -373,6 +380,120 @@ internal sealed class SenderHost : IAsyncDisposable
         }
     }
 
+    // Enables one temporary, source-IP-restricted URL for the standalone RPI app.
+    // The selected PKG path and digest are snapshotted; later UI selections cannot
+    // silently change the bytes that an already accepted installation task fetches.
+    public string EnableRpiFileAccess(string receiverIp, string selectedFile, string sha256)
+    {
+        if (_app is null)
+            throw new InvalidOperationException("Start LAN discovery before enabling RPI access.");
+        if (!IPAddress.TryParse(receiverIp, out IPAddress? receiverAddress) ||
+            receiverAddress.AddressFamily != AddressFamily.InterNetwork ||
+            IPAddress.IsLoopback(receiverAddress) || receiverAddress.Equals(IPAddress.Any))
+            throw new ArgumentException("RPI receiver must be a valid IPv4 address.", nameof(receiverIp));
+        if (string.IsNullOrWhiteSpace(selectedFile) ||
+            !Path.GetExtension(selectedFile).Equals(".pkg", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Only a PS4 PKG file can be offered to RPI.", nameof(selectedFile));
+        if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
+            throw new ArgumentException("SHA-256 must contain 64 hexadecimal characters.", nameof(sha256));
+
+        var file = new FileInfo(selectedFile);
+        if (!file.Exists || file.Length < 4)
+            throw new FileNotFoundException("Selected PKG is missing or empty.", selectedFile);
+
+        string localAddress = ResolveLocalAddressForPeer(receiverAddress);
+        lock (_stateLock)
+        {
+            _rpiFilePath = file.FullName;
+            _rpiFileName = file.Name;
+            _rpiSha256 = sha256.ToLowerInvariant();
+            _rpiReceiverIp = receiverAddress.ToString();
+            _rpiFileExpiresAt = DateTimeOffset.UtcNow.AddHours(4);
+        }
+
+        return $"http://{localAddress}:{DefaultHttpPort}/api/v1/rpi-file";
+    }
+
+    public void RevokeRpiFileAccess()
+    {
+        lock (_stateLock)
+        {
+            _rpiFilePath = null;
+            _rpiFileName = null;
+            _rpiSha256 = null;
+            _rpiReceiverIp = null;
+            _rpiFileExpiresAt = default;
+        }
+    }
+
+    private string ResolveLocalAddressForPeer(IPAddress peer)
+    {
+        uint peerValue = BinaryPrimitives.ReadUInt32BigEndian(peer.GetAddressBytes());
+        var best = _lanInterfaces
+            .Where(n =>
+            {
+                uint local = BinaryPrimitives.ReadUInt32BigEndian(n.Address.GetAddressBytes());
+                uint mask = BinaryPrimitives.ReadUInt32BigEndian(n.Mask.GetAddressBytes());
+                return (peerValue & mask) == (local & mask);
+            })
+            .OrderByDescending(n => n.PrefixLength)
+            .FirstOrDefault();
+
+        if (best is not null)
+            return best.Address.ToString();
+
+        // UDP connect selects the OS route without sending a packet.
+        using var routeProbe = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        routeProbe.Connect(new IPEndPoint(peer, 12800));
+        if (routeProbe.LocalEndPoint is IPEndPoint localEndPoint &&
+            localEndPoint.Address.AddressFamily == AddressFamily.InterNetwork &&
+            !IPAddress.IsLoopback(localEndPoint.Address) &&
+            !localEndPoint.Address.Equals(IPAddress.Any))
+            return localEndPoint.Address.ToString();
+
+        throw new InvalidOperationException("Не удалось определить локальный IPv4-адрес ПК для связи с RPI.");
+    }
+
+    private IResult ServeRpiFile(HttpContext context)
+    {
+        string? path;
+        string? fileName;
+        string? sha256;
+        string? receiverIp;
+
+        lock (_stateLock)
+        {
+            if (_rpiFilePath is null || _rpiFileName is null || _rpiSha256 is null ||
+                _rpiReceiverIp is null || DateTimeOffset.UtcNow >= _rpiFileExpiresAt)
+                return Results.StatusCode(StatusCodes.Status410Gone);
+
+            path = _rpiFilePath;
+            fileName = _rpiFileName;
+            sha256 = _rpiSha256;
+            receiverIp = _rpiReceiverIp;
+        }
+
+        string? remoteIp = context.Connection.RemoteIpAddress?.MapToIPv4().ToString();
+        if (remoteIp is null || !string.Equals(remoteIp, receiverIp, StringComparison.OrdinalIgnoreCase))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        if (!System.IO.File.Exists(path))
+            return Results.StatusCode(StatusCodes.Status410Gone);
+
+        try
+        {
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var etag = new EntityTagHeaderValue($"\\"{sha256}\\"");
+            return Results.File(stream, "application/octet-stream", fileName,
+                entityTag: etag, enableRangeProcessing: true);
+        }
+        catch (IOException)
+        {
+            return Results.Problem("PKG could not be opened for RPI.", statusCode: 409);
+        }
+    }
+
     private static string CreateStableTransferId(string sha256)
     {
         // A content-derived UUID keeps the receiver partial-download key
@@ -507,6 +628,11 @@ internal sealed class SenderHost : IAsyncDisposable
             _transferToken = null;
             _acceptedReceiver = null;
             _acceptedAt = default;
+            _rpiFilePath = null;
+            _rpiFileName = null;
+            _rpiSha256 = null;
+            _rpiReceiverIp = null;
+            _rpiFileExpiresAt = default;
         }
 
         if (_cancellation is not null)
