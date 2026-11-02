@@ -29,24 +29,42 @@ internal sealed class SenderHost : IAsyncDisposable
     private Task? _beaconTask;
     private Task? _receiverListenTask;
     private IReadOnlyList<LanInterface> _lanInterfaces = Array.Empty<LanInterface>();
+    private TransferOffer? _offer;
 
     public event Action<DiscoveredReceiver>? ReceiverDiscovered;
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
+    public bool IsRunning => _app is not null;
 
-    public async Task StartAsync(string selectedFile, string sha256)
+    public void UpdateOffer(string? selectedFile, string? sha256)
     {
-        if (_app is not null)
-            throw new InvalidOperationException("AMEGA sender is already running.");
+        if (string.IsNullOrWhiteSpace(selectedFile) || string.IsNullOrWhiteSpace(sha256))
+        {
+            _offer = null;
+            return;
+        }
+
+        if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
+            throw new ArgumentException("SHA-256 must contain 64 hexadecimal characters.", nameof(sha256));
 
         var file = new FileInfo(selectedFile);
         if (!file.Exists)
             throw new FileNotFoundException("Selected package no longer exists.", selectedFile);
 
-        var offer = new TransferOffer(
+        _offer = new TransferOffer(
             "amega", 1, "transfer_offer", Guid.NewGuid().ToString("D"),
             _senderId, file.Name, file.Length,
             Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
-            sha256, DateTimeOffset.UtcNow);
+            sha256.ToLowerInvariant(), DateTimeOffset.UtcNow);
+    }
+
+    public async Task StartAsync(string? selectedFile = null, string? sha256 = null)
+    {
+        if (_app is not null)
+            throw new InvalidOperationException("AMEGA sender is already running.");
+
+        // Discovery is independent of file hashing. A user can find the PS4 first,
+        // then select a large PKG; the offer becomes available after SHA-256 finishes.
+        UpdateOffer(selectedFile, sha256);
 
         _lanInterfaces = GetLanInterfaces();
         NetworkSummary = _lanInterfaces.Count == 0
@@ -67,9 +85,16 @@ internal sealed class SenderHost : IAsyncDisposable
             protocol = "amega",
             major = 1,
             status = "discovery_only",
+            offer_ready = _offer is not null,
             sender_id = _senderId
         }));
-        app.MapGet("/api/v1/offer", () => Results.Json(offer));
+        app.MapGet("/api/v1/offer", () =>
+        {
+            IResult result = _offer is null
+                ? Results.Problem("No package has been selected and verified yet.", statusCode: 409)
+                : Results.Json(_offer);
+            return result;
+        });
 
         await app.StartAsync();
         _app = app;
