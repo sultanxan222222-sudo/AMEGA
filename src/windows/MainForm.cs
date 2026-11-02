@@ -38,6 +38,7 @@ internal sealed class MainForm : Form
     private string? _rpiReadyIp;
     private bool _rpiBusy;
     private bool _rpiInstallActive;
+    private bool _rpiInstallRequestInFlight;
 
     public MainForm()
     {
@@ -142,7 +143,7 @@ internal sealed class MainForm : Form
     {
         _chooseButton.Enabled = !_rpiInstallActive && !_rpiBusy;
         _startButton.Enabled = !_isSearching;
-        _stopButton.Enabled = _isSearching || _hashCts is not null;
+        _stopButton.Enabled = (_isSearching || _hashCts is not null) && !_rpiInstallRequestInFlight;
 
         StyleButton(_chooseButton, enabled: true, Color.FromArgb(55, 64, 78), Color.White);
         StyleButton(_startButton, _startButton.Enabled, Color.FromArgb(245, 190, 55), Color.FromArgb(26, 29, 35));
@@ -568,6 +569,8 @@ internal sealed class MainForm : Form
             }
 
             string packageUrl = _sender.EnableRpiFileAccess(target.IpAddress, path, actualHash);
+            _rpiInstallRequestInFlight = true;
+            UpdateActionButtons();
             RpiInstallResult result = await _rpiClient.InstallAsync(
                 target.IpAddress, packageUrl, CancellationToken.None);
             if (!result.Success || result.TaskId is null)
@@ -605,6 +608,7 @@ internal sealed class MainForm : Form
         finally
         {
             _hashProgress.Visible = false;
+            _rpiInstallRequestInFlight = false;
             _rpiBusy = false;
             UpdateActionButtons();
         }
@@ -678,10 +682,12 @@ internal sealed class MainForm : Form
 
     private async void FormIsClosing(object? sender, FormClosingEventArgs e)
     {
-        if (_rpiInstallActive)
+        if (_rpiInstallActive || _rpiInstallRequestInFlight)
         {
-            var choice = MessageBox.Show(this,
-                "RPI может ещё скачивать PKG. Закрытие AMEGA остановит источник файла и прервёт эту загрузку. Всё равно закрыть?",
+            string warning = _rpiInstallRequestInFlight
+                ? "RPI ещё обрабатывает запрос установки. Закрытие AMEGA отключит источник PKG; задача могла уже начаться, но загрузка может оборваться. Всё равно закрыть?"
+                : "RPI может ещё скачивать PKG. Закрытие AMEGA остановит источник файла и прервёт эту загрузку. Всё равно закрыть?";
+            var choice = MessageBox.Show(this, warning,
                 "Закрытие AMEGA",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
             if (choice != DialogResult.Yes)
