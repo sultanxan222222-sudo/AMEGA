@@ -1,8 +1,5 @@
 #include <SDL2/SDL.h>
 #include <orbis/libkernel.h>
-#include <orbis/Net.h>
-#include <orbis/NetCtl.h>
-#include <orbis/Sysmodule.h>
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
@@ -35,6 +32,29 @@ typedef struct {
     uint32_t Version;
 } OrbisKernelSwVersion;
 #endif
+
+/*
+ * Local Net/NetCtl ABI declarations.
+ * The pinned OpenOrbis image ships an older NetCtl.h which includes a
+ * non-existent sys/stdint.h, so keep only the documented ABI surface here.
+ */
+typedef union {
+    uint32_t alignment;
+    char ip_address[16];
+    char reserved[256];
+} AmegaNetCtlInfo;
+
+static const int32_t AMEGA_NET_CTL_INFO_IP_ADDRESS = 14;
+static const uint32_t AMEGA_SYSMODULE_INTERNAL_NET = 0x8000001Cu;
+static const uint32_t AMEGA_SYSMODULE_INTERNAL_NETCTL = 0x80000009u;
+
+extern "C" {
+int32_t sceNetInit(void);
+int32_t sceNetPoolCreate(const char* name, int32_t size, int32_t flags);
+int32_t sceNetCtlInit(void);
+int32_t sceNetCtlGetInfo(int32_t code, AmegaNetCtlInfo* info);
+uint32_t sceSysmoduleLoadModuleInternal(uint32_t moduleId);
+}
 
 static const int SENDER_DISCOVERY_PORT = 38470;
 static const int RECEIVER_DISCOVERY_PORT = 38472;
@@ -656,8 +676,8 @@ static bool initializePs4Network()
 
     // OpenOrbis exposes Net and NetCtl as internal system modules.
     // Load them before calling their APIs or creating BSD sockets.
-    const uint32_t netModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
-    const uint32_t ctlModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NETCTL);
+    const uint32_t netModule = sceSysmoduleLoadModuleInternal(AMEGA_SYSMODULE_INTERNAL_NET);
+    const uint32_t ctlModule = sceSysmoduleLoadModuleInternal(AMEGA_SYSMODULE_INTERNAL_NETCTL);
     char moduleLog[160];
     snprintf(moduleLog, sizeof(moduleLog),
         "Network module load results: Net=0x%08X NetCtl=0x%08X",
@@ -704,8 +724,8 @@ static void refreshLocalIp()
     // Unlike arbitrary interface enumeration, this reports the configured
     // PS4 connection address for Ethernet or Wi-Fi.
     if (g_netCtlReady) {
-        OrbisNetCtlInfo info = {};
-        const int32_t result = sceNetCtlGetInfo(ORBIS_NET_CTL_INFO_IP_ADDRESS, &info);
+        AmegaNetCtlInfo info = {};
+        const int32_t result = sceNetCtlGetInfo(AMEGA_NET_CTL_INFO_IP_ADDRESS, &info);
         info.ip_address[sizeof(info.ip_address) - 1] = '\0';
         if (result == 0 && isUsableLocalIPv4(info.ip_address)) {
             snprintf(g_localIp, sizeof(g_localIp), "%s", info.ip_address);
