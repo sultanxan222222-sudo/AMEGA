@@ -83,3 +83,14 @@ This is diagnostic information only. The actual installer mode still must be det
 - Community hardware test details for 13.50 and 13.52: https://github.com/caziques/PS4
 - Current PS4 firmware entry-point status: https://consolemods.org/wiki/Ps4_getting_started
 - Firmware chain status: https://henjb.com/
+## Native AMEGA file reception does not require installer services
+
+The current AMEGA receiver has its own HTTP Range download and receiver-side SHA-256 path. It does not require GoldHEN FTP, BinLoader, Klog, GoldHEN's Remote Package Install feature, or the separate Remote Package Installer application to receive a file.
+
+Verified files are staged under /data/AMEGA/Download. Partial files are retained with resume metadata; the transfer ID is content-derived so the same package can resume after the PC app restarts. The receiver requests a fresh short-lived token after an explicit Accept action and never writes that token to the resume file.
+
+This is independent of the later installation step. AMEGA does not currently invoke a GoldHEN or RPI installer and does not install a received package automatically. Any future installer adapter must be detected at the application/API level and must report the actual task result.
+
+CI currently verifies the streaming SHA-256 implementation and a local Range-resume test that interrupts a 4,194,427-byte transfer after 600,000 bytes, then checks that the second request resumes from that exact byte offset and that the completed digest matches. CI does not prove filesystem permissions, runtime ABI behavior, or controller/network stability on a real PS4; those remain hardware validation requirements.
+
+The receiver's system software readout uses a compatibility bridge to the documented OpenOrbis ABI. It compiles in the pinned build container but must be compared against the console's System Information screen before its result is treated as verified. Firmware reporting is diagnostic only and never selects an installer mode.
