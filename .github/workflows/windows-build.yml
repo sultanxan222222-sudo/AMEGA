@@ -6,12 +6,12 @@ on:
       - "src/windows/**"
       - "tests/range-coverage/**"
       - "tests/windows-ui/**"
-      - "tests/windows-ui/**"
       - ".github/workflows/windows-build.yml"
   pull_request:
     paths:
       - "src/windows/**"
       - "tests/range-coverage/**"
+      - "tests/windows-ui/**"
       - ".github/workflows/windows-build.yml"
   workflow_dispatch:
 
