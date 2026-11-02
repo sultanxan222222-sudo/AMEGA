@@ -44,9 +44,7 @@ internal sealed class SenderHost : IAsyncDisposable
     private string? _rpiSha256;
     private string? _rpiReceiverIp;
     private DateTimeOffset _rpiFileExpiresAt;
-    private long _rpiFileSize;
-    private long _rpiCoveredBytes;
-    private readonly List<(long Start, long End)> _rpiServedRanges = new();
+    private ByteRangeCoverage? _rpiRangeCoverage;
 
     public event Action<DiscoveredReceiver>? ReceiverDiscovered;
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
@@ -411,9 +409,7 @@ internal sealed class SenderHost : IAsyncDisposable
             _rpiFileName = file.Name;
             _rpiSha256 = sha256.ToLowerInvariant();
             _rpiReceiverIp = receiverAddress.ToString();
-            _rpiFileSize = file.Length;
-            _rpiCoveredBytes = 0;
-            _rpiServedRanges.Clear();
+            _rpiRangeCoverage = new ByteRangeCoverage(file.Length);
             _rpiFileExpiresAt = DateTimeOffset.UtcNow.AddHours(12);
         }
 
@@ -429,9 +425,7 @@ internal sealed class SenderHost : IAsyncDisposable
             _rpiSha256 = null;
             _rpiReceiverIp = null;
             _rpiFileExpiresAt = default;
-            _rpiFileSize = 0;
-            _rpiCoveredBytes = 0;
-            _rpiServedRanges.Clear();
+            _rpiRangeCoverage = null;
         }
     }
 
@@ -440,42 +434,21 @@ internal sealed class SenderHost : IAsyncDisposable
         lock (_stateLock)
         {
             bool active = _rpiFilePath is not null &&
+                _rpiRangeCoverage is not null &&
                 DateTimeOffset.UtcNow < _rpiFileExpiresAt;
-            return (active ? _rpiCoveredBytes : 0,
-                active ? _rpiFileSize : 0, active);
+            return (active ? _rpiRangeCoverage!.CoveredBytes : 0,
+                active ? _rpiRangeCoverage!.TotalBytes : 0, active);
         }
     }
 
     private void RecordRpiRead(long start, int count)
     {
-        if (count <= 0 || start < 0) return;
-
         lock (_stateLock)
         {
-            if (_rpiFilePath is null || _rpiFileSize <= 0 ||
-                DateTimeOffset.UtcNow >= _rpiFileExpiresAt || start >= _rpiFileSize)
+            if (_rpiFilePath is null || _rpiRangeCoverage is null ||
+                DateTimeOffset.UtcNow >= _rpiFileExpiresAt)
                 return;
-
-            long mergedStart = start;
-            long mergedEnd = Math.Min(_rpiFileSize, start + (long)count);
-            int index = 0;
-            while (index < _rpiServedRanges.Count &&
-                _rpiServedRanges[index].End < mergedStart)
-                index++;
-
-            while (index < _rpiServedRanges.Count &&
-                _rpiServedRanges[index].Start <= mergedEnd)
-            {
-                mergedStart = Math.Min(mergedStart, _rpiServedRanges[index].Start);
-                mergedEnd = Math.Max(mergedEnd, _rpiServedRanges[index].End);
-                _rpiServedRanges.RemoveAt(index);
-            }
-
-            _rpiServedRanges.Insert(index, (mergedStart, mergedEnd));
-            long covered = 0;
-            foreach (var range in _rpiServedRanges)
-                covered += range.End - range.Start;
-            _rpiCoveredBytes = Math.Min(_rpiFileSize, covered);
+            _rpiRangeCoverage.Add(start, count);
         }
     }
 
