@@ -39,6 +39,7 @@ static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
 static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
+static char g_firmwareVersion[48] = "НЕ ОПРЕДЕЛЕНА";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
 static SDL_GameController* g_gameController = nullptr;
@@ -160,6 +161,48 @@ static void refreshLocalIp()
     if (!found) snprintf(g_localIp, sizeof(g_localIp), "НЕТ IPv4 СЕТИ");
 }
 
+static void refreshFirmwareVersion()
+{
+    OrbisKernelSwVersion version = {};
+    version.Size = sizeof(version);
+    const int32_t result = sceKernelGetSystemSwVersion(&version);
+    if (result < 0) {
+        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+        writeStartupLog("sceKernelGetSystemSwVersion unavailable");
+        return;
+    }
+
+    char raw[sizeof(version.VersionString) + 1] = {};
+    memcpy(raw, version.VersionString, sizeof(version.VersionString));
+    raw[sizeof(version.VersionString)] = '\\0';
+
+    char* start = raw;
+    while (*start && isspace((unsigned char)*start)) ++start;
+    size_t length = strlen(start);
+    while (length > 0 && isspace((unsigned char)start[length - 1]))
+        start[--length] = '\\0';
+
+    // The version field should be plain digits and dots. Reject unexpected
+    // bytes rather than placing untrusted system data directly into JSON.
+    for (size_t i = 0; i < length; ++i) {
+        if (!isdigit((unsigned char)start[i]) && start[i] != '.') {
+            snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+            writeStartupLog("Firmware version string had an unexpected format");
+            return;
+        }
+    }
+
+    if (length == 0) {
+        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
+        return;
+    }
+
+    snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "%s", start);
+    char message[96];
+    snprintf(message, sizeof(message), "Firmware detected: %s", g_firmwareVersion);
+    writeStartupLog(message);
+}
+
 static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
 {
     if (g_socket < 0 || !g_lastSenderNonce[0]) return;
@@ -170,8 +213,8 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
         "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
-        "\"reply_to_nonce\":\"%s\"}",
-        g_receiverId, g_nonce, g_lastSenderNonce);
+        "\"firmware_version\":\"%s\",\"reply_to_nonce\":\"%s\"}",
+        g_receiverId, g_nonce, g_firmwareVersion, g_lastSenderNonce);
 
     if (unicastTarget) {
         sockaddr_in target = *unicastTarget;
@@ -428,6 +471,8 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
     drawText(renderer, 64, 555, g_status, GREEN, 1);
     drawText(renderer, 64, 575, "IP PS4:", TEXT, 1);
     drawText(renderer, 160, 575, g_localIp, MUTED, 1);
+    drawText(renderer, 64, 600, "ПРОШИВКА PS4:", TEXT, 1);
+    drawText(renderer, 240, 600, g_firmwareVersion, MUTED, 1);
     drawText(renderer, 64, 625, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
     drawText(renderer, 64, 650, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
     drawText(renderer, 64, 685, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
@@ -685,6 +730,7 @@ int main(int argc, char* argv[])
 
     loadOrCreateReceiverId();
     refreshLocalIp();
+    refreshFirmwareVersion();
     openDiscoverySocket();
     if (g_socket < 0)
         writeStartupLog("Discovery socket unavailable; UI remains active");
