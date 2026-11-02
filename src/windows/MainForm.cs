@@ -8,6 +8,7 @@ internal sealed class MainForm : Form
     private readonly Button _chooseButton = new();
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
+    private readonly Button _sendButton = new();
     private readonly Label _fileLabel = new();
     private readonly Label _sizeLabel = new();
     private readonly Label _hashLabel = new();
@@ -22,6 +23,10 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
     private string? _selectedFile;
     private string? _selectedHash;
+    private string? _selectedReceiverId;
+    private string? _offeredReceiverId;
+    private bool _offerSent;
+    private bool _refreshingDevices;
     private bool _isSearching;
 
     public MainForm()
@@ -53,6 +58,7 @@ internal sealed class MainForm : Form
         ConfigureButton(_chooseButton, "Выбрать PKG", 30, 135, 170);
         ConfigureButton(_startButton, "Искать PS4", 215, 135, 170);
         ConfigureButton(_stopButton, "Остановить", 400, 135, 170);
+        ConfigureButton(_sendButton, "Отправить PKG", 585, 135, 170);
 
         _fileLabel.SetBounds(32, 205, 740, 28);
         _sizeLabel.SetBounds(32, 239, 740, 25);
@@ -85,7 +91,7 @@ internal sealed class MainForm : Form
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
-            title, subtitle, _chooseButton, _startButton, _stopButton,
+            title, subtitle, _chooseButton, _startButton, _stopButton, _sendButton,
             _fileLabel, _sizeLabel, _hashLabel, _hashProgress, _devicesTitle, _devicesList,
             _stageLabel, _statusLabel
         ]);
@@ -94,6 +100,8 @@ internal sealed class MainForm : Form
         _deviceExpiryTimer.Tick += (_, _) => RemoveExpiredDevices();
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
+        _sendButton.Click += SendClicked;
+        _devicesList.SelectedIndexChanged += DeviceSelectionChanged;
         _stopButton.Click += StopClicked;
         FormClosing += FormIsClosing;
         UpdateActionButtons();
@@ -123,6 +131,13 @@ internal sealed class MainForm : Form
             ? "Отменить всё"
             : _hashCts is not null ? "Отменить проверку" : "Остановить поиск";
         StyleButton(_stopButton, _stopButton.Enabled, Color.FromArgb(190, 65, 58), Color.White);
+
+        _sendButton.Text = _offerSent ? "Предложение активно" : "Отправить PKG";
+        _sendButton.Enabled = _isSearching && !_offerSent &&
+            _hashCts is null && !string.IsNullOrWhiteSpace(_selectedFile) &&
+            !string.IsNullOrWhiteSpace(_selectedHash) && GetSelectedReceiver() is not null;
+        StyleButton(_sendButton, _sendButton.Enabled,
+            Color.FromArgb(99, 205, 145), Color.FromArgb(26, 29, 35));
     }
 
     private static void StyleButton(Button button, bool enabled, Color activeBack, Color activeFore)
@@ -150,6 +165,8 @@ internal sealed class MainForm : Form
         var info = new FileInfo(path);
         _selectedFile = path;
         _selectedHash = null;
+        _offerSent = false;
+        _offeredReceiverId = null;
         _sender.UpdateOffer(null, null);
 
         using var cts = new CancellationTokenSource();
@@ -176,12 +193,14 @@ internal sealed class MainForm : Form
                 return;
 
             _selectedHash = Convert.ToHexString(digest).ToLowerInvariant();
-            _sender.UpdateOffer(path, _selectedHash);
+            // A verified PKG is only published to the PS4 after the user
+            // selects a receiver and presses Send.
+            _sender.UpdateOffer(null, null);
             _hashLabel.Text = $"SHA-256: {_selectedHash}";
             _hashProgress.Value = 100;
             _statusLabel.Text = _isSearching
-                ? "PKG проверен. Поиск PS4 продолжается; предложение обновлено."
-                : "PKG проверен. Теперь можно запустить поиск PS4.";
+                ? "PKG проверен. Выбери приставку и нажми «Отправить PKG»."
+                : "PKG проверен. Запусти поиск PS4, затем нажми «Отправить PKG».";
         }
         catch (OperationCanceledException)
         {
@@ -258,7 +277,10 @@ internal sealed class MainForm : Form
             _statusLabel.Text = "Запускаю обнаружение. Выбор PKG и SHA-256 не блокируют поиск.";
             UpdateActionButtons();
 
-            await _sender.StartAsync(_selectedFile, _selectedHash);
+            _offerSent = false;
+            _offeredReceiverId = null;
+            _sender.UpdateOffer(null, null);
+            await _sender.StartAsync();
             _deviceExpiryTimer.Start();
             _statusLabel.Text = "Поиск запущен. Запусти AMEGA на PS4 и оставь обе программы открытыми.";
             _stageLabel.Text = $"Сеть ПК: {_sender.NetworkSummary}. Ожидаю ответ PS4.";
@@ -294,22 +316,104 @@ internal sealed class MainForm : Form
         RefreshDeviceList();
     }
 
+    private DiscoveredReceiver? GetSelectedReceiver()
+    {
+        if (_devicesList.SelectedIndex < 0) return null;
+        var ordered = _devices.Values.OrderBy(x => x.DisplayName).ToList();
+        return _devicesList.SelectedIndex < ordered.Count
+            ? ordered[_devicesList.SelectedIndex]
+            : null;
+    }
+
+    private void DeviceSelectionChanged(object? sender, EventArgs e)
+    {
+        if (_refreshingDevices) return;
+        var selected = GetSelectedReceiver();
+        string? newId = selected?.ReceiverId;
+        if (_offerSent && !string.Equals(newId, _offeredReceiverId, StringComparison.OrdinalIgnoreCase))
+        {
+            _sender.UpdateOffer(null, null);
+            _offerSent = false;
+            _offeredReceiverId = null;
+            _statusLabel.Text = "Выбрана другая приставка. Нажми «Отправить PKG» ещё раз.";
+        }
+        _selectedReceiverId = newId;
+        UpdateActionButtons();
+    }
+
     private void RefreshDeviceList()
     {
+        var ordered = _devices.Values.OrderBy(x => x.DisplayName).ToList();
+        _refreshingDevices = true;
+        _devicesList.BeginUpdate();
         _devicesList.Items.Clear();
-        if (_devices.Count == 0)
+
+        if (ordered.Count == 0)
         {
             _devicesList.Items.Add("Пока приставки не найдены. Проверь одну Wi-Fi/LAN сеть и брандмауэр.");
+            _selectedReceiverId = null;
+        }
+        else
+        {
+            foreach (var device in ordered)
+                _devicesList.Items.Add(device.DisplayLabel);
+
+            int selectedIndex = _selectedReceiverId is null
+                ? -1
+                : ordered.FindIndex(x => string.Equals(
+                    x.ReceiverId, _selectedReceiverId, StringComparison.OrdinalIgnoreCase));
+            if (selectedIndex < 0) selectedIndex = 0;
+            _devicesList.SelectedIndex = selectedIndex;
+            _selectedReceiverId = ordered[selectedIndex].ReceiverId;
+        }
+
+        _devicesList.EndUpdate();
+        _refreshingDevices = false;
+
+        if (_offerSent && !string.Equals(_selectedReceiverId, _offeredReceiverId, StringComparison.OrdinalIgnoreCase))
+        {
+            _sender.UpdateOffer(null, null);
+            _offerSent = false;
+            _offeredReceiverId = null;
+            _statusLabel.Text = "Целевая приставка больше не найдена. Выбери устройство и отправь PKG заново.";
+        }
+        UpdateActionButtons();
+    }
+
+    private void SendClicked(object? sender, EventArgs e)
+    {
+        var receiver = GetSelectedReceiver();
+        if (!_isSearching || receiver is null ||
+            string.IsNullOrWhiteSpace(_selectedFile) ||
+            string.IsNullOrWhiteSpace(_selectedHash))
+        {
+            _statusLabel.Text = "Сначала выбери PKG, дождись проверки и выбери найденную PS4.";
             return;
         }
 
-        foreach (var device in _devices.Values.OrderBy(x => x.DisplayName))
-            _devicesList.Items.Add(device.DisplayLabel);
+        try
+        {
+            _sender.UpdateOffer(_selectedFile, _selectedHash, receiver.ReceiverId);
+            _offeredReceiverId = receiver.ReceiverId;
+            _offerSent = true;
+            _statusLabel.Text = $"Предложение отправлено для {receiver.DisplayName}. На PS4 выбери этот ПК и нажми X.";
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"Не удалось подготовить отправку: {ex.Message}";
+            _offerSent = false;
+            _offeredReceiverId = null;
+        }
+        UpdateActionButtons();
     }
 
     private async void StopClicked(object? sender, EventArgs e)
     {
         bool wasHashing = _hashCts is not null;
+        if (_offerSent)
+            _sender.UpdateOffer(null, null);
+        _offerSent = false;
+        _offeredReceiverId = null;
         _hashCts?.Cancel();
         if (_isSearching)
             await StopSenderAsync();
