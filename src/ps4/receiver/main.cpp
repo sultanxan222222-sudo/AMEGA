@@ -776,40 +776,70 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
     drawText(renderer, 62, 52, "AMEGA", GOLD, 4);
     drawText(renderer, 64, 126, "ПЕРЕДАЧА ИГР ПО WI-FI", TEXT, 2);
 
-    fill(renderer, 60, 185, 1160, 2, PANEL2);
-    drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
-
-    int count = 0;
-    for (int i = 0; i < MAX_SENDERS; ++i) if (g_senders[i].used) ++count;
-
-    if (count == 0) {
-        fill(renderer, 60, 275, 1160, 150, PANEL);
-        drawText(renderer, 96, 320, "ИЩУ КОМПЬЮТЕР AMEGA...", TEXT, 2);
-        drawText(renderer, 96, 370, "ПК И PS4 ДОЛЖНЫ БЫТЬ В ОДНОЙ WI-FI СЕТИ", MUTED, 1);
+    if (g_screen == SCREEN_OFFER) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ОТ КОМПЬЮТЕРА", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        char shortName[88] = {};
+        snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
+        drawText(renderer, 92, 310, shortName, TEXT, 1);
+        char sizeLine[80] = {};
+        snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
+            (double)g_offerFileSize / (1024.0 * 1024.0));
+        drawText(renderer, 92, 360, sizeLine, MUTED, 1);
+        char hashLine[96] = {};
+        snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
+        drawText(renderer, 92, 400, hashLine, MUTED, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "X - ПРИНЯТЬ     O - НАЗАД", TEXT, 1);
+        drawText(renderer, 64, 685, "ПРИЁМ ПАКЕТА ПОТРЕБУЕТ СЛЕДУЮЩЕГО ЭТАПА ПЕРЕДАЧИ", MUTED, 1);
+    } else if (g_screen == SCREEN_ACCEPTED) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ПОДТВЕРЖДЕНИЕ ПОЛУЧЕНО", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        drawText(renderer, 96, 320, "ПРЕДЛОЖЕНИЕ ПРИНЯТО", GREEN, 2);
+        drawText(renderer, 96, 380, "ПК ВЫДАЛ ОДНОРАЗОВЫЙ ТОКЕН ДОСТУПА", TEXT, 1);
+        drawText(renderer, 96, 420, "ПЕРЕДАЧА ФАЙЛА ЕЩЁ НЕ НАЧАТА", MUTED, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "O - ВЕРНУТЬСЯ К СПИСКУ КОМПЬЮТЕРОВ", TEXT, 1);
+        drawText(renderer, 64, 685, "ФАЙЛ БУДЕТ ЗАГРУЖАТЬСЯ ПОСЛЕ ДОБАВЛЕНИЯ ПРИЁМНИКА", MUTED, 1);
     } else {
-        int row = 0;
-        for (int i = 0; i < MAX_SENDERS; ++i) {
-            if (!g_senders[i].used) continue;
-            const bool selected = (i == g_selected);
-            fill(renderer, 60, 270 + row * 92, 1160, 78, selected ? PANEL2 : PANEL);
-            if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
-            drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
-            char line[100];
-            snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
-            drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
-            ++row;
+        fill(renderer, 60, 185, 1160, 2, PANEL2);
+        drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
+
+        int count = 0;
+        for (int i = 0; i < MAX_SENDERS; ++i) if (g_senders[i].used) ++count;
+
+        if (count == 0) {
+            fill(renderer, 60, 275, 1160, 150, PANEL);
+            drawText(renderer, 96, 320, "ИЩУ КОМПЬЮТЕР AMEGA...", TEXT, 2);
+            drawText(renderer, 96, 370, "ПК И PS4 ДОЛЖНЫ БЫТЬ В ОДНОЙ WI-FI СЕТИ", MUTED, 1);
+        } else {
+            int row = 0;
+            for (int i = 0; i < MAX_SENDERS; ++i) {
+                if (!g_senders[i].used) continue;
+                const bool selected = (i == g_selected);
+                fill(renderer, 60, 270 + row * 92, 1160, 78, selected ? PANEL2 : PANEL);
+                if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
+                drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
+                char line[100];
+                snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
+                drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
+                ++row;
+            }
         }
+
+        fill(renderer, 60, 520, 1160, 2, PANEL2);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 575, "IP PS4:", TEXT, 1);
+        drawText(renderer, 160, 575, g_localIp, MUTED, 1);
+        drawText(renderer, 64, 600, "ПРОШИВКА PS4:", TEXT, 1);
+        drawText(renderer, 240, 600, g_firmwareVersion, MUTED, 1);
+        drawText(renderer, 64, 625, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
+        drawText(renderer, 64, 650, "X - ПРЕДЛОЖЕНИЕ     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
+        drawText(renderer, 64, 685, "ВЫБЕРИ ПК И НАЖМИ X, ЧТОБЫ ПОСМОТРЕТЬ PKG", MUTED, 1);
     }
 
-    fill(renderer, 60, 520, 1160, 2, PANEL2);
-    drawText(renderer, 64, 555, g_status, GREEN, 1);
-    drawText(renderer, 64, 575, "IP PS4:", TEXT, 1);
-    drawText(renderer, 160, 575, g_localIp, MUTED, 1);
-    drawText(renderer, 64, 600, "ПРОШИВКА PS4:", TEXT, 1);
-    drawText(renderer, 240, 600, g_firmwareVersion, MUTED, 1);
-    drawText(renderer, 64, 625, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
-    drawText(renderer, 64, 650, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
-    drawText(renderer, 64, 685, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
     if (surfaceRenderer)
         SDL_UpdateWindowSurface(window);
@@ -817,7 +847,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
 
 static void moveSelection(int direction)
 {
-    if (g_selected < 0) return;
+    if (g_screen != SCREEN_DISCOVERY || g_selected < 0) return;
 
     for (int n = 1; n <= MAX_SENDERS; ++n) {
         const int candidate = (g_selected + direction * n + MAX_SENDERS * 2) % MAX_SENDERS;
@@ -826,6 +856,27 @@ static void moveSelection(int direction)
             return;
         }
     }
+}
+
+static void activateSelection()
+{
+    if (g_screen == SCREEN_DISCOVERY)
+        fetchSelectedOffer();
+    else if (g_screen == SCREEN_OFFER)
+        acceptSelectedOffer();
+}
+
+static void returnToPreviousScreen()
+{
+    if (g_screen == SCREEN_DISCOVERY) {
+        g_selected = -1;
+        snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+        return;
+    }
+
+    g_screen = SCREEN_DISCOVERY;
+    g_accessToken[0] = 0;
+    snprintf(g_status, sizeof(g_status), "ВОЗВРАТ К СПИСКУ КОМПЬЮТЕРОВ");
 }
 
 static void openInputDevices()
@@ -899,13 +950,11 @@ static void handleController(SDL_Event& event)
             case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                 moveSelection(1);
                 break;
-            case SDL_CONTROLLER_BUTTON_A: // Cross on the standard PlayStation mapping.
-                if (g_selected >= 0 && g_senders[g_selected].used)
-                    snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
+            case SDL_CONTROLLER_BUTTON_A: // Cross.
+                activateSelection();
                 break;
             case SDL_CONTROLLER_BUTTON_B: // Circle.
-                g_selected = -1;
-                snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+                returnToPreviousScreen();
                 break;
             default:
                 break;
@@ -933,12 +982,10 @@ static void handleController(SDL_Event& event)
             moveSelection(1);
             break;
         case 0:
-            if (g_selected >= 0 && g_senders[g_selected].used)
-                snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
+            activateSelection();
             break;
         case 1:
-            g_selected = -1;
-            snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+            returnToPreviousScreen();
             break;
         default:
             break;
