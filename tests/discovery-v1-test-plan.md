@@ -27,3 +27,13 @@
 - The application uses SDL_RenderPresent only; it does not mix the renderer with SDL_UpdateWindowSurface.
 
 CI validates compilation and package creation. Network cases and visible PS4 rendering still require real hardware on the same LAN.
+
+## 5. Asymmetric PC-search / PS4-standby behavior
+
+1. Start AMEGA on PS4 without starting the PC app. The PS4 discovery screen must show "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ С ПК"; it must not transmit periodic receiver announcements.
+2. Start Search on Windows. The PC sends probes from UDP 38472 to UDP 38470; the PS4 receives each probe and returns a nonce-matched unicast response.
+3. Verify that Windows lists the PS4 name, IPv4 address, and firmware version, and that the PS4 lists the PC name, IPv4 address, and HTTP port.
+4. Stop Windows discovery. The PS4 remains in standby and the PC entry expires from the PS4 list; no background PS4 broadcast is emitted.
+5. Restart Windows discovery and confirm both lists repopulate without restarting the PS4 app.
+
+The automated OpenOrbis build validates compilation only; the above packet-flow and UI checks still require a real PS4 and Windows host on the same LAN.
