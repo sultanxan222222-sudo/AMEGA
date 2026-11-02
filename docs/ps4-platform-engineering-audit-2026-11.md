@@ -330,3 +330,38 @@ The receiver now initializes SDL GameController as well as SDL Joystick, prefers
 - OpenOrbis libkernel header: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h
 - OpenOrbis kernel types: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h
 
+
+
+## 11. New 14.00 BD-J research (2026-10-30) — experimental, not a compatibility promise
+
+PS4 Dev Wiki records a new item dated 2026-10-30 titled BD-JB-14.00, with a compiled ISO linked from the page. The record is explicitly preliminary:
+- the suggested vulnerable Java method/check is still marked as requiring verification against the actual PS4 BD-J ISO;
+- a kernel-stage vulnerability is described as undocumented, with an estimated success rate around 10%;
+- the linked community ISO repository itself labels its code as stolen and warns that the Hx stage may write unknown kernel objects even on a failed run;
+- that repository warns that a reported success must be independently verified and describes cold reboot after a failed attempt.
+
+This is a scene-development signal, not a stable supported firmware release. ConsoleMods' currently published exploit chart and getting-started guide still have inconsistent/older summaries for 14.00; the getting-started guide says the BD-J route is unstable and GoldHEN is not available there. AMEGA must therefore label this as **experimental / unverified**, not "GoldHEN supported".
+
+**Engineering decision:** AMEGA will not ship, embed, invoke or depend on this ISO, its classes, leaked code, or any experimental kernel payload. It is unnecessary for the user's current HEN setup and unrelated to the core PC↔PS4 transfer protocol. The only legitimate long-term implication is that a future receiver may run under additional HEN variants; it still has to use the same capability-based discovery and transfer layers. We do not need to exploit firmware to discover a console that already runs AMEGA.
+
+References:
+- PS4 Dev Wiki vulnerability record, BD-JB-14.00 added 2026-10-30: https://www.psdevwiki.com/ps4/Vulnerabilities
+- Public repository described by that record (research only; it explicitly claims the code is stolen and carries safety warnings): https://github.com/OptiTronOffical/PS4-14.00-BD-JB
+- ConsoleMods current exploit chart: https://consolemods.org/wiki/PS4:Exploit_Chart
+- ConsoleMods getting-started firmware notes: https://consolemods.org/wiki/Ps4_getting_started
+
+## 12. Reproducible toolchain and controller ABI note
+
+OpenOrbis v0.5.4 is the latest public release shown in its release list as of this audit. The release notes specifically change OrbisPadData placement of acceleration and angularVelocity, update kernel.h, add sceSystemServiceAddLocalProcess args, and fix several struct/prototype details. This reinforces the need to pin a toolchain version before consuming raw native controller structures.
+
+The PS4 CI previously used a mutable Docker tag openorbisofficial/toolchain:latest. On 2026-11-02, the successful build pulled image digest:
+
+sha256:f752d09f9d3227c729ee069f29a05450bd8fa4ef5e785c0929ab8479f7dc4e64
+
+AMEGA's PS4 workflow now pins that exact image digest. It keeps builds reproducible and prevents an upstream image update from silently changing headers/libraries between runs. The build container's public headers/stubs must still be verified against the specific symbol being used; the attempted system-version call was removed from the shipping receiver because its type did not exist in that pinned build image.
+
+Current controller decision:
+- keep SDL GameController + raw SDL Joystick as the application input route;
+- do not replace it with direct scePad structure access until we pin the v0.5.4 headers/library stubs, inspect exact OrbisPadData ABI, and run a USB/Bluetooth DS4 hardware test.
+
+Reference: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases
