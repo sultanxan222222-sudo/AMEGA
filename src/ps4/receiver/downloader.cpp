@@ -17,7 +17,13 @@
 #include <unistd.h>
 
 namespace {
+#ifdef AMEGA_DOWNLOAD_TEST_ROOT
+constexpr const char* kAmegaRoot = AMEGA_DOWNLOAD_TEST_ROOT;
+constexpr const char* kDownloadDirectory = AMEGA_DOWNLOAD_TEST_ROOT "/Download";
+#else
+constexpr const char* kAmegaRoot = "/data/AMEGA";
 constexpr const char* kDownloadDirectory = "/data/AMEGA/Download";
+#endif
 constexpr uint64_t kFreeSpaceReserve = 16ull * 1024ull * 1024ull;
 constexpr size_t kNetworkBufferSize = 256u * 1024u;
 constexpr size_t kHeaderBufferSize = 8192u;
@@ -462,7 +468,7 @@ bool AmegaReceivePackage(const AmegaDownloadRequest& request,
         return false;
     }
 
-    if (!ensureDirectory("/data/AMEGA") || !ensureDirectory(kDownloadDirectory)) {
+    if (!ensureDirectory(kAmegaRoot) || !ensureDirectory(kDownloadDirectory)) {
         setFailure(runtime, errno ? errno : 2);
         return false;
     }
