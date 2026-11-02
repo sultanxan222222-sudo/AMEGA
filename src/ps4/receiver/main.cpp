@@ -38,6 +38,7 @@ static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
+static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
 
@@ -126,6 +127,32 @@ static int getIntField(const char* json, const char* key)
     ++p;
     while (*p == ' ' || *p == '\t') ++p;
     return atoi(p);
+}
+
+static void refreshLocalIp()
+{
+    struct ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) {
+        snprintf(g_localIp, sizeof(g_localIp), "ОШИБКА СЕТИ");
+        return;
+    }
+
+    bool found = false;
+    for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
+        if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
+            !(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK))
+            continue;
+
+        const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+        char ip[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &address->sin_addr, ip, sizeof(ip))) {
+            snprintf(g_localIp, sizeof(g_localIp), "%s", ip);
+            found = true;
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    if (!found) snprintf(g_localIp, sizeof(g_localIp), "НЕТ IPv4 СЕТИ");
 }
 
 static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
@@ -394,6 +421,8 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
 
     fill(renderer, 60, 520, 1160, 2, PANEL2);
     drawText(renderer, 64, 555, g_status, GREEN, 1);
+    drawText(renderer, 64, 590, "IP PS4:", TEXT, 1);
+    drawText(renderer, 160, 590, g_localIp, MUTED, 1);
     drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
     drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
@@ -493,7 +522,7 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.1 startup");
+    writeStartupLog("AMEGA 0.2.2 startup");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         char message[256];
@@ -565,6 +594,7 @@ int main(int argc, char* argv[])
     if (SDL_NumJoysticks() > 0) g_controller = SDL_JoystickOpen(0);
 
     loadOrCreateReceiverId();
+    refreshLocalIp();
     openDiscoverySocket();
     if (g_socket < 0)
         writeStartupLog("Discovery socket unavailable; UI remains active");
