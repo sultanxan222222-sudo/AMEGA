@@ -343,6 +343,7 @@ internal sealed class MainForm : Form
             await Task.Run(() => _sender.StartAsync());
             _isSearching = true;
             _startInProgress = false;
+            UpdateActionButtons();
 
             // Stop can be pressed while Kestrel is starting. In that short
             // interval SenderHost has not yet finished opening its sockets,
