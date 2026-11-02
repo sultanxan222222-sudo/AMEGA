@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,6 +39,7 @@ struct SenderEntry {
     char id[48];
     char name[64];
     char ip[INET_ADDRSTRLEN];
+    char instanceNonce[40];
     int httpPort;
     Uint32 lastSeen;
     bool used;
@@ -56,6 +58,18 @@ static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
 static SDL_GameController* g_gameController = nullptr;
 static Uint32 g_lastNetworkRefresh = 0;
+
+enum AmegaScreen {
+    SCREEN_DISCOVERY = 0,
+    SCREEN_OFFER = 1,
+    SCREEN_ACCEPTED = 2
+};
+static AmegaScreen g_screen = SCREEN_DISCOVERY;
+static char g_offerTransferId[48] = {};
+static char g_offerFileName[224] = {};
+static char g_offerSha256[80] = {};
+static uint64_t g_offerFileSize = 0;
+static char g_accessToken[80] = {};
 
 static void writeStartupLog(const char* message);
 static bool controllerConnected();
@@ -115,25 +129,107 @@ static void loadOrCreateReceiverId()
     makeNonce(g_nonce);
 }
 
+static int hexDigitValue(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool appendUtf8(char* out, size_t cap, size_t& used, uint32_t cp)
+{
+    unsigned char bytes[4];
+    size_t count = 0;
+    if (cp <= 0x7f) {
+        bytes[0] = (unsigned char)cp; count = 1;
+    } else if (cp <= 0x7ff) {
+        bytes[0] = (unsigned char)(0xc0 | (cp >> 6));
+        bytes[1] = (unsigned char)(0x80 | (cp & 0x3f)); count = 2;
+    } else if (cp <= 0xffff) {
+        bytes[0] = (unsigned char)(0xe0 | (cp >> 12));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | (cp & 0x3f)); count = 3;
+    } else if (cp <= 0x10ffff) {
+        bytes[0] = (unsigned char)(0xf0 | (cp >> 18));
+        bytes[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+        bytes[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+        bytes[3] = (unsigned char)(0x80 | (cp & 0x3f)); count = 4;
+    } else return false;
+
+    if (used + count + 1 > cap) return false;
+    memcpy(out + used, bytes, count);
+    used += count;
+    return true;
+}
+
+static bool parseHex4(const char*& p, uint32_t& value)
+{
+    value = 0;
+    for (int i = 0; i < 4; ++i) {
+        int digit = hexDigitValue(*p++);
+        if (digit < 0) return false;
+        value = (value << 4) | (uint32_t)digit;
+    }
+    return true;
+}
+
 static bool getStringField(const char* json, const char* key, char* out, size_t cap)
 {
+    if (!json || !key || !out || cap == 0) return false;
     char needle[80];
     snprintf(needle, sizeof(needle), "\"%s\"", key);
     const char* p = strstr(json, needle);
-    if (!p) return false;
-    p = strchr(p, ':');
-    if (!p) return false;
+    if (!p || !(p = strchr(p, ':'))) return false;
     ++p;
-    while (*p == ' ' || *p == '\t') ++p;
-    if (*p != '"') return false;
-    ++p;
-    size_t n = 0;
-    while (*p && *p != '"' && n + 1 < cap) {
-        if (*p == '\\' && p[1]) ++p;
-        out[n++] = *p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p++ != '"') return false;
+
+    size_t used = 0;
+    while (*p) {
+        if (*p == '"') {
+            out[used] = 0;
+            return true;
+        }
+        if ((unsigned char)*p < 0x20) return false;
+
+        if (*p != '\\') {
+            if (used + 2 > cap) return false;
+            out[used++] = *p++;
+            continue;
+        }
+
+        ++p;
+        if (!*p) return false;
+        char esc = *p++;
+        uint32_t cp = 0;
+        switch (esc) {
+            case '"': cp = '"'; break;
+            case '\\': cp = '\\'; break;
+            case '/': cp = '/'; break;
+            case 'b': cp = ' '; break;
+            case 'f': cp = ' '; break;
+            case 'n': cp = ' '; break;
+            case 'r': cp = ' '; break;
+            case 't': cp = ' '; break;
+            case 'u':
+                if (!parseHex4(p, cp)) return false;
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    if (p[0] != '\\' || p[1] != 'u') return false;
+                    p += 2;
+                    uint32_t low = 0;
+                    if (!parseHex4(p, low) || low < 0xdc00 || low > 0xdfff) return false;
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) {
+                    return false;
+                }
+                break;
+            default:
+                return false;
+        }
+        if (!appendUtf8(out, cap, used, cp)) return false;
     }
-    out[n] = 0;
-    return *p == '"';
+    return false;
 }
 
 static int getIntField(const char* json, const char* key)
@@ -147,7 +243,222 @@ static int getIntField(const char* json, const char* key)
     return atoi(p);
 }
 
-static void refreshLocalIp()
+static int64_t getLongField(const char* json, const char* key)
+{
+    char needle[80];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = strstr(json, needle);
+    if (!p || !(p = strchr(p, ':'))) return -1;
+    ++p;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p < '0' || *p > '9') return -1;
+    char* end = nullptr;
+    long long value = strtoll(p, &end, 10);
+    return end == p || value < 0 ? -1 : (int64_t)value;
+}
+
+static bool sendAll(int sock, const char* data, size_t length)
+{
+    size_t sent = 0;
+    while (sent < length) {
+        ssize_t n = send(sock, data + sent, length - sent, 0);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+static bool httpJsonRequest(const char* ip, int port, const char* method,
+    const char* path, const char* body, const char* token,
+    int* statusOut, char* bodyOut, size_t bodyCap)
+{
+    if (!ip || !method || !path || !statusOut || !bodyOut || bodyCap == 0) return false;
+    bodyOut[0] = 0;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;
+
+    struct timeval timeout = {};
+    timeout.tv_sec = 4;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_in remote = {};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, ip, &remote.sin_addr) != 1 ||
+        connect(sock, reinterpret_cast<sockaddr*>(&remote), sizeof(remote)) != 0) {
+        close(sock);
+        return false;
+    }
+
+    const size_t bodyLength = body ? strlen(body) : 0;
+    char request[2048];
+    int requestLength = snprintf(request, sizeof(request),
+        "%s %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n"
+        "Accept: application/json\r\nUser-Agent: AMEGA-PS4/0.2.2\r\n"
+        "%s%s%s"
+        "%s"
+        "\r\n%s",
+        method, path, ip, port,
+        body ? "Content-Type: application/json\r\n" : "",
+        body ? "Content-Length: " : "",
+        body ? "" : "",
+        token ? "X-AMEGA-Token: " : "",
+        token ? token : "");
+    // Add the numeric length and the blank header separator separately.
+    if (requestLength < 0 || (size_t)requestLength >= sizeof(request) ||
+        bodyLength > 1024) {
+        close(sock);
+        return false;
+    }
+    if (body) {
+        size_t used = (size_t)requestLength;
+        int extra = snprintf(request + used, sizeof(request) - used, "%zu\r\n\r\n", bodyLength);
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        requestLength += extra;
+    } else {
+        size_t used = (size_t)requestLength;
+        int extra = snprintf(request + used, sizeof(request) - used, "\r\n");
+        if (extra < 0 || (size_t)extra >= sizeof(request) - used) {
+            close(sock);
+            return false;
+        }
+        requestLength += extra;
+    }
+
+    bool sent = sendAll(sock, request, (size_t)requestLength);
+    if (sent && bodyLength > 0) sent = sendAll(sock, body, bodyLength);
+    if (!sent) {
+        close(sock);
+        return false;
+    }
+
+    char raw[8192] = {};
+    size_t total = 0;
+    while (total + 1 < sizeof(raw)) {
+        ssize_t n = recv(sock, raw + total, sizeof(raw) - total - 1, 0);
+        if (n == 0) break;
+        if (n < 0) {
+            close(sock);
+            return false;
+        }
+        total += (size_t)n;
+    }
+    close(sock);
+    raw[total] = 0;
+
+    char* headerEnd = strstr(raw, "\r\n\r\n");
+    if (!headerEnd) return false;
+    int status = 0;
+    if (sscanf(raw, "HTTP/%*s %d", &status) != 1) return false;
+    *statusOut = status;
+
+    const char* responseBody = headerEnd + 4;
+    size_t responseLength = total - (size_t)(responseBody - raw);
+    if (responseLength + 1 > bodyCap) return false;
+
+    // Kestrel sends a Content-Length for these small JSON responses. Reject
+    // chunked or otherwise incomplete bodies instead of parsing partial JSON.
+    if (strstr(raw, "Transfer-Encoding: chunked") ||
+        strstr(raw, "transfer-encoding: chunked"))
+        return false;
+    memcpy(bodyOut, responseBody, responseLength);
+    bodyOut[responseLength] = 0;
+    return true;
+}
+
+static bool fetchSelectedOffer()
+{
+    if (g_selected < 0 || g_selected >= MAX_SENDERS || !g_senders[g_selected].used)
+        return false;
+
+    char response[4096] = {};
+    int status = 0;
+    SenderEntry& pc = g_senders[g_selected];
+    if (!httpJsonRequest(pc.ip, pc.httpPort, "GET", "/api/v1/offer",
+        nullptr, nullptr, &status, response, sizeof(response))) {
+        snprintf(g_status, sizeof(g_status), "НЕТ ОТВЕТА ОТ ПК");
+        return false;
+    }
+    if (status != 200) {
+        snprintf(g_status, sizeof(g_status), status == 409
+            ? "НА ПК ЕЩЁ НЕ НАЖАЛИ ОТПРАВИТЬ"
+            : "ПК ОТКЛОНИЛ ЗАПРОС ПРЕДЛОЖЕНИЯ");
+        return false;
+    }
+
+    char transferId[48] = {}, fileName[224] = {}, sha256[80] = {};
+    int64_t fileSize = getLongField(response, "file_size");
+    if (!getStringField(response, "transfer_id", transferId, sizeof(transferId)) ||
+        !getStringField(response, "file_name", fileName, sizeof(fileName)) ||
+        !getStringField(response, "sha256", sha256, sizeof(sha256)) ||
+        fileSize <= 0 || strlen(sha256) != 64) {
+        snprintf(g_status, sizeof(g_status), "ОШИБКА ДАННЫХ ПРЕДЛОЖЕНИЯ");
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i)
+        if (!isxdigit((unsigned char)sha256[i])) {
+            snprintf(g_status, sizeof(g_status), "НЕВЕРНЫЙ SHA-256 PKG");
+            return false;
+        }
+
+    snprintf(g_offerTransferId, sizeof(g_offerTransferId), "%s", transferId);
+    snprintf(g_offerFileName, sizeof(g_offerFileName), "%s", fileName);
+    snprintf(g_offerSha256, sizeof(g_offerSha256), "%s", sha256);
+    g_offerFileSize = (uint64_t)fileSize;
+    g_accessToken[0] = 0;
+    g_screen = SCREEN_OFFER;
+    snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПОЛУЧЕНО");
+    writeStartupLog("Offer metadata fetched from selected PC");
+    return true;
+}
+
+static bool acceptSelectedOffer()
+{
+    if (g_screen != SCREEN_OFFER || g_selected < 0 ||
+        g_selected >= MAX_SENDERS || !g_senders[g_selected].used)
+        return false;
+
+    SenderEntry& pc = g_senders[g_selected];
+    char requestBody[512];
+    snprintf(requestBody, sizeof(requestBody),
+        "{\"transfer_id\":\"%s\",\"receiver_id\":\"%s\","
+        "\"instance_nonce\":\"%s\",\"reply_to_nonce\":\"%s\"}",
+        g_offerTransferId, g_receiverId, g_nonce, pc.instanceNonce);
+
+    char response[2048] = {};
+    int status = 0;
+    if (!httpJsonRequest(pc.ip, pc.httpPort, "POST", "/api/v1/accept",
+        requestBody, nullptr, &status, response, sizeof(response))) {
+        snprintf(g_status, sizeof(g_status), "НЕТ ОТВЕТА ПРИ ПОДТВЕРЖДЕНИИ");
+        return false;
+    }
+
+    char token[80] = {};
+    if (status != 200 || !strstr(response, "\"accepted\":true") ||
+        !getStringField(response, "access_token", token, sizeof(token)) ||
+        strlen(token) != 64) {
+        snprintf(g_status, sizeof(g_status), "ПК НЕ ПРИНЯЛ ПОДТВЕРЖДЕНИЕ");
+        return false;
+    }
+    for (size_t i = 0; i < 64; ++i) {
+        if (!isxdigit((unsigned char)token[i])) {
+            snprintf(g_status, sizeof(g_status), "НЕВЕРНЫЙ ТОКЕН ДОСТУПА");
+            return false;
+        }
+    }
+
+    snprintf(g_accessToken, sizeof(g_accessToken), "%s", token);
+    g_screen = SCREEN_ACCEPTED;
+    snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПРИНЯТО");
+    writeStartupLog("Receiver accepted current PC offer; binary transfer not started yet");
+    return true;
+}
+
+static void refreshLocalIp
 {
     struct ifaddrs* interfaces = nullptr;
     if (getifaddrs(&interfaces) != 0) {
@@ -304,6 +615,7 @@ static void updateSender(const char* json, const sockaddr_in& from)
     snprintf(entry.id, sizeof(entry.id), "%s", id);
     snprintf(entry.name, sizeof(entry.name), "%s", name);
     snprintf(entry.ip, sizeof(entry.ip), "%s", ip);
+    snprintf(entry.instanceNonce, sizeof(entry.instanceNonce), "%s", nonce);
     entry.httpPort = port;
     entry.lastSeen = SDL_GetTicks();
     entry.used = true;
