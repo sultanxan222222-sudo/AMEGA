@@ -163,7 +163,9 @@ static bool headerValue(const char* header, const char* name, char* output, size
 
     while (*line) {
         const char* end = std::strstr(line, "\r\n");
-        if (!end || end == line) break;
+        const bool hasTerminator = end != nullptr;
+        if (!end) end = line + std::strlen(line);
+        if (end == line) break;
         if (static_cast<size_t>(end - line) > nameLength &&
             strncasecmp(line, name, nameLength) == 0 &&
             line[nameLength] == ':') {
@@ -177,6 +179,7 @@ static bool headerValue(const char* header, const char* name, char* output, size
             output[length] = 0;
             return true;
         }
+        if (!hasTerminator) break;
         line = end + 2;
     }
     return false;
