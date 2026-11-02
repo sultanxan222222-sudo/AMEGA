@@ -7,6 +7,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -421,7 +422,7 @@ static bool fetchSelectedOffer()
         !getStringField(response, "file_name", fileName, sizeof(fileName)) ||
         !getStringField(response, "file_kind", fileKind, sizeof(fileKind)) ||
         !getStringField(response, "sha256", sha256, sizeof(sha256)) ||
-        std::strcmp(senderId, pc.id) != 0 ||
+        strcmp(senderId, pc.id) != 0 ||
         !isValidTransferId(transferId) ||
         std::strcmp(fileKind, "pkg") != 0 ||
         fileName[0] == 0 ||
@@ -512,12 +513,12 @@ static bool startPackageDownload()
     }
 
     AmegaDownloadRequest request = {};
-    std::snprintf(request.ip, sizeof(request.ip), "%s", g_senders[g_selected].ip);
+    snprintf(request.ip, sizeof(request.ip), "%s", g_senders[g_selected].ip);
     request.port = g_senders[g_selected].httpPort;
-    std::snprintf(request.transferId, sizeof(request.transferId), "%s", g_offerTransferId);
-    std::snprintf(request.accessToken, sizeof(request.accessToken), "%s", g_accessToken);
+    snprintf(request.transferId, sizeof(request.transferId), "%s", g_offerTransferId);
+    snprintf(request.accessToken, sizeof(request.accessToken), "%s", g_accessToken);
     request.fileSize = g_offerFileSize;
-    std::snprintf(request.sha256, sizeof(request.sha256), "%s", g_offerSha256);
+    snprintf(request.sha256, sizeof(request.sha256), "%s", g_offerSha256);
 
     g_downloadRuntime.cancel.store(false, std::memory_order_relaxed);
     g_downloadRuntime.errorCode.store(0, std::memory_order_relaxed);
@@ -907,14 +908,14 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ОТ КОМПЬЮТЕРА", GOLD, 2);
         fill(renderer, 60, 275, 1160, 245, PANEL);
         char shortName[88] = {};
-        std::snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
+        snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
         drawText(renderer, 92, 310, shortName, TEXT, 1);
         char sizeLine[80] = {};
-        std::snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
+        snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
             static_cast<double>(g_offerFileSize) / (1024.0 * 1024.0));
         drawText(renderer, 92, 360, sizeLine, MUTED, 1);
         char hashLine[96] = {};
-        std::snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
+        snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
         drawText(renderer, 92, 400, hashLine, MUTED, 1);
         drawText(renderer, 64, 555, g_status, GREEN, 1);
         drawText(renderer, 64, 625, "X - ПРИНЯТЬ     O - НАЗАД", TEXT, 1);
@@ -942,7 +943,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         if (received > total) received = total;
         int percent = total > 0 ? static_cast<int>((received * 100u) / total) : 0;
         char progressLine[96] = {};
-        std::snprintf(progressLine, sizeof(progressLine), "ПОЛУЧЕНО: %d%%", percent);
+        snprintf(progressLine, sizeof(progressLine), "ПОЛУЧЕНО: %d%%", percent);
         drawText(renderer, 96, 320, progressLine, TEXT, 2);
         char sizeLine[120] = {};
         std::snprintf(sizeLine, sizeof(sizeLine), "%.2f MB ИЗ %.2f MB",
@@ -966,7 +967,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         drawText(renderer, 96, 320, "SHA-256 СОВПАЛ С ОРИГИНАЛОМ НА ПК", GREEN, 1);
         drawText(renderer, 96, 375, "ФАЙЛ СОХРАНЁН:", TEXT, 1);
         char pathLine[112] = {};
-        std::snprintf(pathLine, sizeof(pathLine), "%.88s", g_downloadRuntime.finalPath);
+        snprintf(pathLine, sizeof(pathLine), "%.88s", g_downloadRuntime.finalPath);
         drawText(renderer, 96, 420, pathLine, MUTED, 1);
         drawText(renderer, 64, 555, "ОРИГИНАЛЬНЫЙ PKG НА ПК НЕ УДАЛЯЛСЯ", GREEN, 1);
         drawText(renderer, 64, 625, "O - ВЕРНУТЬСЯ К СПИСКУ КОМПЬЮТЕРОВ", TEXT, 1);
@@ -991,7 +992,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
                 if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
                 drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
                 char line[100];
-                std::snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
+                snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
                 drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
                 ++row;
             }
@@ -1308,6 +1309,7 @@ int main(int argc, char* argv[])
     bool running = true;
     while (running) {
         pollNetwork();
+        reapDownloadThread();
         const Uint32 networkNow = SDL_GetTicks();
         if (networkNow - g_lastNetworkRefresh >= 5000) {
             refreshLocalIp();
@@ -1325,6 +1327,12 @@ int main(int argc, char* argv[])
         SDL_Delay(33);
     }
 
+    if (g_downloadThread) {
+        g_downloadRuntime.cancel.store(true, std::memory_order_relaxed);
+        SDL_WaitThread(g_downloadThread, nullptr);
+        g_downloadThread = nullptr;
+    }
+    g_accessToken[0] = 0;
     if (g_socket >= 0) close(g_socket);
     if (g_gameController) SDL_GameControllerClose(g_gameController);
     if (g_controller) SDL_JoystickClose(g_controller);
