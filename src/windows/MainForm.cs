@@ -152,7 +152,7 @@ internal sealed class MainForm : Form
         // Stop remains available during startup and during an active search.
         _startButton.Enabled = !_isSearching && !_startInProgress;
         _stopButton.Enabled = (_isSearching || _startInProgress || _hashCts is not null) &&
-            !_rpiInstallRequestInFlight;
+            !_rpiInstallRequestInFlight && !_stopRequestedDuringStartup;
 
         StyleButton(_chooseButton, enabled: true, Color.FromArgb(55, 64, 78), Color.White);
         StyleButton(_startButton, _startButton.Enabled, Color.FromArgb(245, 190, 55), Color.FromArgb(26, 29, 35));
