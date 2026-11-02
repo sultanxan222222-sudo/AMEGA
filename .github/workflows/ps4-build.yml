@@ -6,6 +6,8 @@ on:
       - "src/ps4/**"
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
+      - "tools/test_sha256.cpp"
+      - "src/ps4/receiver/sha256.h"
       - ".github/workflows/ps4-build.yml"
   pull_request:
     paths:
@@ -24,6 +26,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Test portable SHA-256 implementation
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tools/test_sha256.cpp -o /tmp/amega-sha256-test
+          /tmp/amega-sha256-test
 
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
