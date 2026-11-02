@@ -49,14 +49,21 @@ Acceptance: Windows can offer a selected PKG, authorize only the selected PS4 an
 Current partial acceptance: the PS4 receiver implements the code path from offer through verified staging. CI builds the PKG; a local mock-server test interrupts a 4,194,427-byte file after 600,000 bytes, resumes at that exact offset and verifies the final digest. Real PS4 hardware acceptance remains open.
 
 ## Stage 3 — installation adapter
-- [ ] Detect GoldHEN built-in Remote Package Install separately from standalone Remote Package Installer and BinLoader.
-- [ ] Add a documented RPI adapter with application-level health check and task-state reporting.
-- [ ] Add optional GoldHEN integration only after firmware/service-specific hardware validation.
-- [ ] Display exact installation state and useful errors.
-- [ ] Require separate user confirmation before installation.
-- [ ] Preserve the verified PKG after installation unless the user separately chooses to delete it.
 
-Acceptance: a verified package can be installed only after explicit confirmation, and completion is reported only when the console installer confirms it.
+- [x] Add a Standalone RPI API client for TCP 12800 with an application-level `POST /api/is_exists` health check.
+- [x] Add explicit Windows confirmation and `POST /api/install` request for one selected, signature-checked PKG.
+- [x] Host a temporary source URL restricted to the selected PS4 IPv4 address; support HTTP Range and ETag.
+- [x] Count unique file-byte intervals actually read by the HTTP response stream so retries and overlapping ranges do not inflate the progress.
+- [x] Handle malformed RPI error responses that include unquoted hexadecimal error codes; keep the source open after an ambiguous timeout because the task may already have been accepted.
+- [x] Warn before closing AMEGA or revoking the source while RPI may still be downloading.
+- [ ] Poll RPI task progress with backoff and distinguish RECEIVED / INSTALLING / INSTALLED / FAILED; RPI may not answer while its single-threaded download handler is busy.
+- [ ] Detect GoldHEN built-in Remote Package Install independently from Standalone RPI and BinLoader.
+- [ ] Add GoldHEN-specific adapter only after firmware/service-specific hardware validation.
+- [ ] Test the API, HTTP Range transfer, and installation on a real PS4 Pro; verify completion on the console.
+
+Current limitation: AMEGA can confirm that RPI accepted an install task (when it returns a task ID) and can show unique HTTP byte coverage served from the PC. It does not yet assert that the PS4 has completed installation. A fully read source file is not the same as an installed title.
+
+Acceptance: installation is separately confirmed by the user; AMEGA reports INSTALLED only after an authoritative console task result or an explicit console-side check.
 
 ## Stage 4 — release hardening
 - [ ] Pairing code shown on both devices with retry limits.
