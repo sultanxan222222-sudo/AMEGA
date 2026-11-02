@@ -147,15 +147,20 @@ internal sealed class MainForm : Form
     private void UpdateActionButtons()
     {
         _chooseButton.Enabled = !_rpiInstallActive && !_rpiBusy;
-        _startButton.Enabled = !_isSearching;
-        _stopButton.Enabled = (_isSearching || _hashCts is not null) &&
-            !_rpiInstallRequestInFlight && !_stopRequestedDuringStartup;
+        // Keep the controls responsive during the asynchronous socket/Kestrel
+        // startup. Search is disabled only while starting or already running;
+        // Stop remains available during startup and during an active search.
+        _startButton.Enabled = !_isSearching && !_startInProgress;
+        _stopButton.Enabled = (_isSearching || _startInProgress || _hashCts is not null) &&
+            !_rpiInstallRequestInFlight;
 
         StyleButton(_chooseButton, enabled: true, Color.FromArgb(55, 64, 78), Color.White);
         StyleButton(_startButton, _startButton.Enabled, Color.FromArgb(245, 190, 55), Color.FromArgb(26, 29, 35));
 
-        _stopButton.Text = _isSearching && _hashCts is not null
-            ? "Отменить всё"
+        _stopButton.Text = _stopRequestedDuringStartup
+            ? "Отмена запуска…"
+            : _startInProgress ? "Отменить запуск"
+            : _isSearching && _hashCts is not null ? "Отменить всё"
             : _hashCts is not null ? "Отменить проверку" : "Остановить поиск";
         StyleButton(_stopButton, _stopButton.Enabled, Color.FromArgb(190, 65, 58), Color.White);
 
@@ -314,7 +319,10 @@ internal sealed class MainForm : Form
         _stopRequestedDuringStartup = false;
         try
         {
-            _isSearching = true;
+            // Do not mark discovery active until the HTTP host and UDP
+            // listener have both started successfully. This prevents a failed
+            // startup from leaving the UI in a false "searching" state.
+            _isSearching = false;
             _devices.Clear();
             _lastSelectedReceiver = null;
             _rpiReadyReceiverId = null;
@@ -329,6 +337,7 @@ internal sealed class MainForm : Form
             _offeredReceiverId = null;
             _sender.UpdateOffer(null, null);
             await _sender.StartAsync();
+            _isSearching = true;
             _startInProgress = false;
 
             // Stop can be pressed while Kestrel is starting. In that short
@@ -707,9 +716,12 @@ internal sealed class MainForm : Form
     {
         if (_startInProgress)
         {
-            _stopRequestedDuringStartup = true;
-            _statusLabel.Text = "Останавливаю запуск сетевого поиска...";
-            UpdateActionButtons();
+            if (!_stopRequestedDuringStartup)
+            {
+                _stopRequestedDuringStartup = true;
+                _statusLabel.Text = "Останавливаю запуск сетевого поиска...";
+                UpdateActionButtons();
+            }
             return;
         }
 
