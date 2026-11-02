@@ -380,7 +380,7 @@ static bool httpJsonRequest(const char* ip, int port, const char* method,
     while (line && line < headerEnd) {
         const char* end = std::strstr(line, "\r\n");
         if (!end || end > headerEnd) end = headerEnd;
-        if (static_cast<size_t>(end - line) >= 19 &&
+        if (static_cast<size_t>(end - line) >= 15 &&
             strncasecmp(line, "Content-Length:", 15) == 0) {
             const char* value = line + 15;
             while (value < end && (*value == ' ' || *value == '\t')) ++value;
@@ -444,8 +444,13 @@ static bool fetchSelectedOffer()
 
     char transferId[48] = {}, fileName[224] = {}, sha256[80] = {};
     char senderId[48] = {}, fileKind[32] = {};
+    char protocol[24] = {}, offerType[40] = {};
     int64_t fileSize = getLongField(response, "file_size");
-    if (getIntField(response, "major") != 1 ||
+    if (!getStringField(response, "protocol", protocol, sizeof(protocol)) ||
+        !getStringField(response, "type", offerType, sizeof(offerType)) ||
+        std::strcmp(protocol, "amega") != 0 ||
+        std::strcmp(offerType, "transfer_offer") != 0 ||
+        getIntField(response, "major") != 1 ||
         !getStringField(response, "sender_id", senderId, sizeof(senderId)) ||
         !getStringField(response, "transfer_id", transferId, sizeof(transferId)) ||
         !getStringField(response, "file_name", fileName, sizeof(fileName)) ||
@@ -465,10 +470,19 @@ static bool fetchSelectedOffer()
             return false;
         }
 
+    const bool sameTransfer = strcmp(g_offerTransferId, transferId) == 0 &&
+        strcmp(g_offerSha256, sha256) == 0 &&
+        g_offerFileSize == static_cast<uint64_t>(fileSize);
     snprintf(g_offerTransferId, sizeof(g_offerTransferId), "%s", transferId);
     snprintf(g_offerFileName, sizeof(g_offerFileName), "%s", fileName);
     snprintf(g_offerSha256, sizeof(g_offerSha256), "%s", sha256);
     g_offerFileSize = (uint64_t)fileSize;
+    if (!sameTransfer) {
+        g_downloadRuntime.bytes.store(0, std::memory_order_relaxed);
+        g_downloadRuntime.errorCode.store(0, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_IDLE, std::memory_order_release);
+        g_downloadRuntime.finalPath[0] = 0;
+    }
     g_accessToken[0] = 0;
     g_screen = SCREEN_OFFER;
     snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПОЛУЧЕНО");
