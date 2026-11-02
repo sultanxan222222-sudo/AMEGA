@@ -37,3 +37,13 @@ CI validates compilation and package creation. Network cases and visible PS4 ren
 5. Restart Windows discovery and confirm both lists repopulate without restarting the PS4 app.
 
 The automated OpenOrbis build validates compilation only; the above packet-flow and UI checks still require a real PS4 and Windows host on the same LAN.
+
+## 6. PS4 local IPv4 initialization and reporting
+
+1. Launch AMEGA after the PS4 has connected to Ethernet or Wi-Fi and received its network configuration.
+2. Confirm the application loads `libSceNet` and `libSceNetCtl`, calls `sceNetInit`, creates the socket pool, then calls `sceNetCtlInit` before querying IP or creating a socket.
+3. Compare the AMEGA IP display with Settings → Network → View Connection Status on the same console.
+4. Repeat on Wi-Fi and Ethernet when available; the displayed address must not be loopback, 0.0.0.0, link-local 169.254/16, or multicast.
+5. Temporarily disconnect the network and confirm AMEGA shows a clear no-IP state rather than a stale or unrelated interface address.
+
+The `sceNetCtlGetInfo` path and module initialization still require on-console validation; CI can only confirm that the code links and packages.
