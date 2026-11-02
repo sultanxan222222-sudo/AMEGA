@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "font_ru.h"
+#include "downloader.h"
 
 // OpenOrbis toolchain images in the wild do not all ship the newest
 // OrbisKernelSwVersion typedef. Keep the documented 0x28 ABI local so
@@ -62,7 +63,9 @@ static Uint32 g_lastNetworkRefresh = 0;
 enum AmegaScreen {
     SCREEN_DISCOVERY = 0,
     SCREEN_OFFER = 1,
-    SCREEN_ACCEPTED = 2
+    SCREEN_ACCEPTED = 2,
+    SCREEN_DOWNLOADING = 3,
+    SCREEN_VERIFIED = 4
 };
 static AmegaScreen g_screen = SCREEN_DISCOVERY;
 static char g_offerTransferId[48] = {};
@@ -70,6 +73,8 @@ static char g_offerFileName[224] = {};
 static char g_offerSha256[80] = {};
 static uint64_t g_offerFileSize = 0;
 static char g_accessToken[80] = {};
+static AmegaDownloadRuntime g_downloadRuntime;
+static SDL_Thread* g_downloadThread = nullptr;
 
 static void writeStartupLog(const char* message);
 static bool controllerConnected();
@@ -374,6 +379,19 @@ static bool httpJsonRequest(const char* ip, int port, const char* method,
     return true;
 }
 
+static bool isValidTransferId(const char* value)
+{
+    if (!value || std::strlen(value) != 36) return false;
+    for (size_t i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (value[i] != '-') return false;
+        } else if (!isxdigit((unsigned char)value[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool fetchSelectedOffer()
 {
     if (g_selected < 0 || g_selected >= MAX_SENDERS || !g_senders[g_selected].used)
@@ -395,11 +413,19 @@ static bool fetchSelectedOffer()
     }
 
     char transferId[48] = {}, fileName[224] = {}, sha256[80] = {};
+    char senderId[48] = {}, fileKind[32] = {};
     int64_t fileSize = getLongField(response, "file_size");
-    if (!getStringField(response, "transfer_id", transferId, sizeof(transferId)) ||
+    if (getIntField(response, "major") != 1 ||
+        !getStringField(response, "sender_id", senderId, sizeof(senderId)) ||
+        !getStringField(response, "transfer_id", transferId, sizeof(transferId)) ||
         !getStringField(response, "file_name", fileName, sizeof(fileName)) ||
+        !getStringField(response, "file_kind", fileKind, sizeof(fileKind)) ||
         !getStringField(response, "sha256", sha256, sizeof(sha256)) ||
-        fileSize <= 0 || strlen(sha256) != 64) {
+        std::strcmp(senderId, pc.id) != 0 ||
+        !isValidTransferId(transferId) ||
+        std::strcmp(fileKind, "pkg") != 0 ||
+        fileName[0] == 0 ||
+        fileSize <= 0 || std::strlen(sha256) != 64) {
         snprintf(g_status, sizeof(g_status), "ОШИБКА ДАННЫХ ПРЕДЛОЖЕНИЯ");
         return false;
     }
@@ -458,8 +484,108 @@ static bool acceptSelectedOffer()
     snprintf(g_accessToken, sizeof(g_accessToken), "%s", token);
     g_screen = SCREEN_ACCEPTED;
     snprintf(g_status, sizeof(g_status), "ПРЕДЛОЖЕНИЕ ПРИНЯТО");
-    writeStartupLog("Receiver accepted current PC offer; binary transfer not started yet");
+    writeStartupLog("Receiver accepted current PC offer");
     return true;
+}
+
+static int downloadWorker(void* userData)
+{
+    AmegaDownloadRequest* request = static_cast<AmegaDownloadRequest*>(userData);
+    if (!request) {
+        g_downloadRuntime.errorCode.store(1007, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        return 1;
+    }
+    const bool success = AmegaReceivePackage(*request, g_downloadRuntime);
+    delete request;
+    return success ? 0 : 1;
+}
+
+static bool startPackageDownload()
+{
+    if (g_downloadThread || g_screen != SCREEN_ACCEPTED || g_selected < 0 ||
+        g_selected >= MAX_SENDERS || !g_senders[g_selected].used ||
+        !isValidTransferId(g_offerTransferId) || !isxdigit((unsigned char)g_accessToken[0]) ||
+        std::strlen(g_accessToken) != 64) {
+        snprintf(g_status, sizeof(g_status), "СНАЧАЛА ПОДТВЕРДИ ПРЕДЛОЖЕНИЕ");
+        return false;
+    }
+
+    AmegaDownloadRequest request = {};
+    std::snprintf(request.ip, sizeof(request.ip), "%s", g_senders[g_selected].ip);
+    request.port = g_senders[g_selected].httpPort;
+    std::snprintf(request.transferId, sizeof(request.transferId), "%s", g_offerTransferId);
+    std::snprintf(request.accessToken, sizeof(request.accessToken), "%s", g_accessToken);
+    request.fileSize = g_offerFileSize;
+    std::snprintf(request.sha256, sizeof(request.sha256), "%s", g_offerSha256);
+
+    g_downloadRuntime.cancel.store(false, std::memory_order_relaxed);
+    g_downloadRuntime.errorCode.store(0, std::memory_order_relaxed);
+    g_downloadRuntime.bytes.store(0, std::memory_order_relaxed);
+    g_downloadRuntime.finalPath[0] = 0;
+    g_downloadRuntime.state.store(AMEGA_DOWNLOAD_RUNNING, std::memory_order_release);
+
+    AmegaDownloadRequest* copy = new (std::nothrow) AmegaDownloadRequest(request);
+    if (!copy) {
+        g_downloadRuntime.errorCode.store(1008, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        snprintf(g_status, sizeof(g_status), "НЕДОСТАТОЧНО ПАМЯТИ ДЛЯ ЗАДАЧИ");
+        return false;
+    }
+
+    g_downloadThread = SDL_CreateThread(downloadWorker, "AMEGA-PKG-Download", copy);
+    if (!g_downloadThread) {
+        delete copy;
+        g_downloadRuntime.errorCode.store(1009, std::memory_order_relaxed);
+        g_downloadRuntime.state.store(AMEGA_DOWNLOAD_FAILED, std::memory_order_release);
+        snprintf(g_status, sizeof(g_status), "НЕ УДАЛОСЬ ЗАПУСТИТЬ ЗАГРУЗКУ");
+        return false;
+    }
+
+    g_screen = SCREEN_DOWNLOADING;
+    snprintf(g_status, sizeof(g_status), "ЗАГРУЗКА PKG НАЧАЛАСЬ");
+    writeStartupLog("Started range-based PKG download to AMEGA staging directory");
+    return true;
+}
+
+static void reapDownloadThread()
+{
+    if (!g_downloadThread) return;
+    const int state = g_downloadRuntime.state.load(std::memory_order_acquire);
+    if (state != AMEGA_DOWNLOAD_PAUSED &&
+        state != AMEGA_DOWNLOAD_COMPLETE &&
+        state != AMEGA_DOWNLOAD_FAILED)
+        return;
+
+    int threadResult = 0;
+    SDL_WaitThread(g_downloadThread, &threadResult);
+    g_downloadThread = nullptr;
+    (void)threadResult;
+
+    if (state == AMEGA_DOWNLOAD_COMPLETE) {
+        g_accessToken[0] = 0;
+        g_screen = SCREEN_VERIFIED;
+        snprintf(g_status, sizeof(g_status), "ФАЙЛ ПОЛУЧЕН И SHA-256 СОВПАЛ");
+        writeStartupLog("PKG download completed and receiver SHA-256 verified");
+    } else if (state == AMEGA_DOWNLOAD_PAUSED) {
+        g_screen = SCREEN_ACCEPTED;
+        snprintf(g_status, sizeof(g_status), "ЗАГРУЗКА ПРИОСТАНОВЛЕНА. X - ПРОДОЛЖИТЬ");
+        writeStartupLog("PKG download paused; verified partial bytes are retained for resume");
+    } else {
+        g_screen = SCREEN_ACCEPTED;
+        const int error = g_downloadRuntime.errorCode.load(std::memory_order_relaxed);
+        if (error == 4)
+            snprintf(g_status, sizeof(g_status), "НЕДОСТАТОЧНО МЕСТА НА ДИСКЕ");
+        else if (error == 401 || error == 403)
+            snprintf(g_status, sizeof(g_status), "ДОСТУП ИСТЁК. ВЫБЕРИ ПК И ПОЛУЧИ ПРЕДЛОЖЕНИЕ СНОВА");
+        else if (error == 8)
+            snprintf(g_status, sizeof(g_status), "SHA-256 НЕ СОВПАЛ. ПОВТОРИ ЗАГРУЗКУ");
+        else
+            snprintf(g_status, sizeof(g_status), "СЕТЬ ПРЕРВАНА. X - ПРОДОЛЖИТЬ ЗАГРУЗКУ");
+        char message[96];
+        snprintf(message, sizeof(message), "PKG download stopped; error=%d", error);
+        writeStartupLog(message);
+    }
 }
 
 static void refreshLocalIp()
@@ -781,28 +907,70 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ОТ КОМПЬЮТЕРА", GOLD, 2);
         fill(renderer, 60, 275, 1160, 245, PANEL);
         char shortName[88] = {};
-        snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
+        std::snprintf(shortName, sizeof(shortName), "%.76s", g_offerFileName);
         drawText(renderer, 92, 310, shortName, TEXT, 1);
         char sizeLine[80] = {};
-        snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
-            (double)g_offerFileSize / (1024.0 * 1024.0));
+        std::snprintf(sizeLine, sizeof(sizeLine), "РАЗМЕР: %.2f MB",
+            static_cast<double>(g_offerFileSize) / (1024.0 * 1024.0));
         drawText(renderer, 92, 360, sizeLine, MUTED, 1);
         char hashLine[96] = {};
-        snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
+        std::snprintf(hashLine, sizeof(hashLine), "SHA-256: %.32s...", g_offerSha256);
         drawText(renderer, 92, 400, hashLine, MUTED, 1);
         drawText(renderer, 64, 555, g_status, GREEN, 1);
         drawText(renderer, 64, 625, "X - ПРИНЯТЬ     O - НАЗАД", TEXT, 1);
-        drawText(renderer, 64, 685, "ПРИЁМ ПАКЕТА ПОТРЕБУЕТ СЛЕДУЮЩЕГО ЭТАПА ПЕРЕДАЧИ", MUTED, 1);
+        drawText(renderer, 64, 685, "ПРИНЯТИЕ СОХРАНИТ ФАЙЛ НА PS4 ТОЛЬКО ПОСЛЕ ПРОВЕРКИ", MUTED, 1);
     } else if (g_screen == SCREEN_ACCEPTED) {
         fill(renderer, 60, 195, 1160, 2, PANEL2);
-        drawText(renderer, 64, 225, "ПОДТВЕРЖДЕНИЕ ПОЛУЧЕНО", GOLD, 2);
+        drawText(renderer, 64, 225, "ПРЕДЛОЖЕНИЕ ПРИНЯТО", GOLD, 2);
         fill(renderer, 60, 275, 1160, 245, PANEL);
-        drawText(renderer, 96, 320, "ПРЕДЛОЖЕНИЕ ПРИНЯТО", GREEN, 2);
-        drawText(renderer, 96, 380, "ПК ВЫДАЛ ОДНОРАЗОВЫЙ ТОКЕН ДОСТУПА", TEXT, 1);
-        drawText(renderer, 96, 420, "ПЕРЕДАЧА ФАЙЛА ЕЩЁ НЕ НАЧАТА", MUTED, 1);
+        drawText(renderer, 96, 320, "ФАЙЛ БУДЕТ СОХРАНЁН В AMEGA / DOWNLOAD", TEXT, 1);
+        uint64_t received = g_downloadRuntime.bytes.load(std::memory_order_relaxed);
+        char receivedLine[96] = {};
+        std::snprintf(receivedLine, sizeof(receivedLine), "УЖЕ ПОЛУЧЕНО: %.2f MB",
+            static_cast<double>(received) / (1024.0 * 1024.0));
+        drawText(renderer, 96, 370, receivedLine, MUTED, 1);
+        drawText(renderer, 96, 420, "ПОСЛЕ ЗАГРУЗКИ AMEGA СВЕРИТ SHA-256", TEXT, 1);
         drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "X - НАЧАТЬ / ПРОДОЛЖИТЬ     O - НАЗАД", TEXT, 1);
+        drawText(renderer, 64, 685, "ЧАСТИЧНЫЙ ФАЙЛ СОХРАНЯЕТСЯ ДЛЯ ВОЗОБНОВЛЕНИЯ", MUTED, 1);
+    } else if (g_screen == SCREEN_DOWNLOADING) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ЗАГРУЗКА PKG НА PS4", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        uint64_t total = g_offerFileSize;
+        uint64_t received = g_downloadRuntime.bytes.load(std::memory_order_relaxed);
+        if (received > total) received = total;
+        int percent = total > 0 ? static_cast<int>((received * 100u) / total) : 0;
+        char progressLine[96] = {};
+        std::snprintf(progressLine, sizeof(progressLine), "ПОЛУЧЕНО: %d%%", percent);
+        drawText(renderer, 96, 320, progressLine, TEXT, 2);
+        char sizeLine[120] = {};
+        std::snprintf(sizeLine, sizeof(sizeLine), "%.2f MB ИЗ %.2f MB",
+            static_cast<double>(received) / (1024.0 * 1024.0),
+            static_cast<double>(total) / (1024.0 * 1024.0));
+        drawText(renderer, 96, 375, sizeLine, MUTED, 1);
+        fill(renderer, 96, 425, 1000, 22, PANEL2);
+        int width = static_cast<int>((static_cast<uint64_t>(1000) * percent) / 100u);
+        if (width > 0) fill(renderer, 96, 425, width, 22, GREEN);
+        const int state = g_downloadRuntime.state.load(std::memory_order_relaxed);
+        drawText(renderer, 96, 475,
+            state == AMEGA_DOWNLOAD_VERIFYING ? "ПРОВЕРКА SHA-256..." : "ЗАПИСЬ ВРЕМЕННОГО ФАЙЛА...",
+            GOLD, 1);
+        drawText(renderer, 64, 555, g_status, GREEN, 1);
+        drawText(renderer, 64, 625, "O - ПРИОСТАНОВИТЬ (ЧАСТИЧНЫЙ ФАЙЛ ОСТАНЕТСЯ)", TEXT, 1);
+        drawText(renderer, 64, 685, "НЕ ЗАКРЫВАЙ ПРИЛОЖЕНИЕ ДЛЯ ПОЛУЧЕНИЯ МАКСИМАЛЬНОЙ СКОРОСТИ", MUTED, 1);
+    } else if (g_screen == SCREEN_VERIFIED) {
+        fill(renderer, 60, 195, 1160, 2, PANEL2);
+        drawText(renderer, 64, 225, "ФАЙЛ ПОЛУЧЕН И ПРОВЕРЕН", GOLD, 2);
+        fill(renderer, 60, 275, 1160, 245, PANEL);
+        drawText(renderer, 96, 320, "SHA-256 СОВПАЛ С ОРИГИНАЛОМ НА ПК", GREEN, 1);
+        drawText(renderer, 96, 375, "ФАЙЛ СОХРАНЁН:", TEXT, 1);
+        char pathLine[112] = {};
+        std::snprintf(pathLine, sizeof(pathLine), "%.88s", g_downloadRuntime.finalPath);
+        drawText(renderer, 96, 420, pathLine, MUTED, 1);
+        drawText(renderer, 64, 555, "ОРИГИНАЛЬНЫЙ PKG НА ПК НЕ УДАЛЯЛСЯ", GREEN, 1);
         drawText(renderer, 64, 625, "O - ВЕРНУТЬСЯ К СПИСКУ КОМПЬЮТЕРОВ", TEXT, 1);
-        drawText(renderer, 64, 685, "ФАЙЛ БУДЕТ ЗАГРУЖАТЬСЯ ПОСЛЕ ДОБАВЛЕНИЯ ПРИЁМНИКА", MUTED, 1);
+        drawText(renderer, 64, 685, "УСТАНОВКА ИГРЫ ОСТАЁТСЯ ОТДЕЛЬНЫМ ДЕЙСТВИЕМ", MUTED, 1);
     } else {
         fill(renderer, 60, 185, 1160, 2, PANEL2);
         drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
@@ -823,7 +991,7 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
                 if (selected) fill(renderer, 60, 270 + row * 92, 7, 78, GOLD);
                 drawText(renderer, 96, 288 + row * 92, g_senders[i].name, TEXT, 2);
                 char line[100];
-                snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
+                std::snprintf(line, sizeof(line), "%s  :  %d", g_senders[i].ip, g_senders[i].httpPort);
                 drawText(renderer, 96, 326 + row * 92, line, MUTED, 1);
                 ++row;
             }
@@ -864,6 +1032,26 @@ static void activateSelection()
         fetchSelectedOffer();
     else if (g_screen == SCREEN_OFFER)
         acceptSelectedOffer();
+    else if (g_screen == SCREEN_ACCEPTED)
+        startPackageDownload();
+}
+
+static void returnToPreviousScreen()
+{
+    if (g_screen == SCREEN_DISCOVERY) {
+        g_selected = -1;
+        snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
+        return;
+    }
+    if (g_screen == SCREEN_DOWNLOADING) {
+        g_downloadRuntime.cancel.store(true, std::memory_order_relaxed);
+        snprintf(g_status, sizeof(g_status), "ОСТАНОВКА. ЧАСТИЧНЫЙ ФАЙЛ СОХРАНЯЕТСЯ");
+        return;
+    }
+
+    g_screen = SCREEN_DISCOVERY;
+    g_accessToken[0] = 0;
+    snprintf(g_status, sizeof(g_status), "ВОЗВРАТ К СПИСКУ КОМПЬЮТЕРОВ");
 }
 
 static void returnToPreviousScreen()
