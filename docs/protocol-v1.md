@@ -4,7 +4,7 @@
 
 ## 1. Transport
 
-- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast probes. PC-to-PS4 announcements use UDP destination 38470 and originate from the PC's fixed UDP 38472 listener socket; PS4 replies are sent to UDP 38472 and also to the observed source port for compatibility. Both sides keep their discovery sockets open while searching.
+- Discovery: the PC is the only active searcher. It sends UDP IPv4 per-interface directed broadcasts plus bounded unicast probes to PS4 port 38470 from its fixed UDP 38472 listener socket. The PS4 stays in standby, listens on 38470, and responds only to a received PC probe; it does not broadcast periodic discovery announcements. PS4 replies are sent to the PC's fixed UDP 38472 listener and, for compatibility, to the observed source port when different.
 - Control and data: HTTP on the trusted home LAN; Windows sender listens on TCP 38471.
 - Messages are UTF-8 JSON except the binary file endpoint.
 - Maximum discovery datagram: 1,200 bytes.
@@ -12,7 +12,7 @@
 
 ## 2. Discovery
 
-Windows sends sender announcements to UDP 38470 from its already-bound UDP 38472 socket and listens for PS4 replies on that same socket. This keeps the discovery source and reply destination ports stable. PS4 replies to both the fixed 38472 listener and the beacon's observed source port, which also supports older sender implementations. Each receiver announcement includes receiver UUID, per-launch nonce, display name, version, optional firmware string, and the PC nonce echoed in `reply_to_nonce`.
+Windows is the only active discoverer: it sends sender announcements every three seconds to UDP 38470 from its already-bound UDP 38472 socket, and listens for PS4 replies on that same socket. The PS4 is a standby responder: it listens on UDP 38470, records each PC that probes it, and sends a unicast receiver announcement only in response to that probe. The response goes to the fixed 38472 listener and, for compatibility, to the beacon's observed source port when different. Each receiver announcement includes receiver UUID, per-launch nonce, display name, version, optional firmware string, and the specific PC nonce echoed in `reply_to_nonce`.
 
 Windows accepts a reply only when its UUID and nonce are valid and `reply_to_nonce` matches the current PC process nonce. PS4 stores each discovered PC's own nonce and IP in that sender's record; it does not use a global "last PC" nonce when accepting an offer.
 
