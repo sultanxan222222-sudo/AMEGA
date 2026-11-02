@@ -8,6 +8,7 @@ The current development target is a trusted private home LAN. Discovery and the 
 
 - Discovery replies are validated against the current PC process nonce, a receiver UUID, and a 32-character receiver nonce.
 - The Windows accept endpoint only accepts the current transfer ID and a receiver UUID/nonce observed within the previous 15 seconds.
+- The accept request itself must come from the same IP address recorded for that receiver during UDP discovery.
 - A successful accept creates a random 256-bit token scoped to one transfer and one receiver IP.
 - The token expires after 30 minutes, and changing/removing the offer or stopping the sender revokes it.
 - The binary file endpoint requires the token and requires the source IP to match the authorized receiver.
