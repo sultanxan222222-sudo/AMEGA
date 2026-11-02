@@ -51,4 +51,14 @@ Require(observed[0] == (10, 10), "first reported range must use the true stream 
 Require(observed[1] == (30, 5), "second reported range must use the true stream offset");
 Require(observed[2] == (70, 8), "third reported range must use the true stream offset");
 
+var rpiBody = "{ \"status\": \"success\", \"error\": 0, \"length_total\": 0x100000000, \"transferred_total\": 0x80000000, \"preparing_percent\": 100, \"local_copy_percent\": 42, \"rest_sec_total\": 17 }";
+Require(RpiTaskProgressParser.TryParse(rpiBody, out RpiTaskProgress? rpi) && rpi is not null,
+    "RPI progress parser must accept its hexadecimal integer response");
+Require(rpi!.TotalBytes == 4_294_967_296L && rpi.TransferredBytes == 2_147_483_648L,
+    "RPI progress parser must decode large hexadecimal byte counts");
+Require(rpi.LocalCopyPercent == 42 && rpi.RemainingSeconds == 17 && rpi.ErrorCode == 0,
+    "RPI progress parser must preserve phase, ETA and error fields");
+Require(!RpiTaskProgressParser.TryParse("{ \"status\": \"fail\", \"error_code\": 0x80990085 }", out _),
+    "RPI error responses must not be mistaken for successful task progress");
+
 Console.WriteLine("AMEGA HTTP Range coverage and stream tests passed");
