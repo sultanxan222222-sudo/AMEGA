@@ -612,7 +612,7 @@ int main(int argc, char* argv[])
     setvbuf(stdout, nullptr, _IONBF, 0);
     writeStartupLog("AMEGA 0.2.2 startup");
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
         char message[256];
         snprintf(message, sizeof(message), "SDL_Init failed: %s", SDL_GetError());
         writeStartupLog(message);
