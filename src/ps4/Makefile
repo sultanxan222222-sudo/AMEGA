@@ -29,7 +29,7 @@ check-toolchain:
 build:
 	mkdir -p build
 
-build/amega.o: receiver/main.cpp receiver/font_ru.h | build
+build/amega.o: receiver/main.cpp receiver/font_ru.h receiver/sha256.h | build
 	$(CXX) $(CXXFLAGS) -c receiver/main.cpp -o $@
 
 build/amega.elf: build/amega.o
