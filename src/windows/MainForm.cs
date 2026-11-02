@@ -140,7 +140,7 @@ internal sealed class MainForm : Form
 
     private void UpdateActionButtons()
     {
-        _chooseButton.Enabled = !_rpiInstallActive;
+        _chooseButton.Enabled = !_rpiInstallActive && !_rpiBusy;
         _startButton.Enabled = !_isSearching;
         _stopButton.Enabled = _isSearching || _hashCts is not null;
 
@@ -153,12 +153,13 @@ internal sealed class MainForm : Form
         StyleButton(_stopButton, _stopButton.Enabled, Color.FromArgb(190, 65, 58), Color.White);
 
         _sendButton.Text = _offerSent ? "Предложение активно" : "Отправить PKG";
-        _sendButton.Enabled = _isSearching && !_offerSent &&
+        _sendButton.Enabled = _isSearching && !_rpiBusy && !_rpiInstallActive && !_offerSent &&
             _hashCts is null && !string.IsNullOrWhiteSpace(_selectedFile) &&
             !string.IsNullOrWhiteSpace(_selectedHash) && GetSelectedReceiver() is not null;
         StyleButton(_sendButton, _sendButton.Enabled,
             Color.FromArgb(99, 205, 145), Color.FromArgb(26, 29, 35));
 
+        _devicesList.Enabled = !_rpiBusy && !_rpiInstallActive;
         DiscoveredReceiver? rpiTarget = GetRpiTarget();
         bool rpiTargetReady = rpiTarget is not null &&
             string.Equals(rpiTarget.ReceiverId, _rpiReadyReceiverId, StringComparison.OrdinalIgnoreCase) &&
