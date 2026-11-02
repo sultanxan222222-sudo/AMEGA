@@ -121,7 +121,7 @@ internal sealed class SenderHost : IAsyncDisposable
                 return result;
             }
         });
-        app.MapPost("/api/v1/accept", (AcceptTransferRequest request) => AcceptTransfer(request));
+        app.MapPost("/api/v1/accept", (HttpContext context, AcceptTransferRequest request) => AcceptTransfer(context, request));
         app.MapMethods("/api/v1/file", new[] { HttpMethods.Get, HttpMethods.Head },
             (HttpContext context) => ServeAuthorizedFile(context));
 
@@ -260,7 +260,7 @@ internal sealed class SenderHost : IAsyncDisposable
         }
     }
 
-    private IResult AcceptTransfer(AcceptTransferRequest request)
+    private IResult AcceptTransfer(HttpContext context, AcceptTransferRequest request)
     {
         if (!Guid.TryParse(request.TransferId, out _) ||
             !Guid.TryParse(request.ReceiverId, out _) ||
@@ -272,6 +272,10 @@ internal sealed class SenderHost : IAsyncDisposable
             !string.Equals(receiver.InstanceNonce, request.InstanceNonce, StringComparison.OrdinalIgnoreCase) ||
             DateTimeOffset.UtcNow - receiver.LastSeen > TimeSpan.FromSeconds(15))
             return Results.Problem("Receiver is not currently discovered. Refresh discovery and try again.", statusCode: 409);
+
+        string? requestIp = context.Connection.RemoteIpAddress?.MapToIPv4().ToString();
+        if (requestIp is null || !string.Equals(requestIp, receiver.IpAddress, StringComparison.OrdinalIgnoreCase))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         lock (_stateLock)
         {
