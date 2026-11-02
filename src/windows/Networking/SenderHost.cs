@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -9,6 +10,7 @@ using AMEGA.Windows.Protocol;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
 
 namespace AMEGA.Windows.Networking;
@@ -30,6 +32,12 @@ internal sealed class SenderHost : IAsyncDisposable
     private Task? _receiverListenTask;
     private IReadOnlyList<LanInterface> _lanInterfaces = Array.Empty<LanInterface>();
     private TransferOffer? _offer;
+    private string? _offerFilePath;
+    private string? _transferToken;
+    private DiscoveredReceiver? _acceptedReceiver;
+    private DateTimeOffset _acceptedAt;
+    private readonly object _stateLock = new();
+    private readonly ConcurrentDictionary<string, DiscoveredReceiver> _discoveredReceivers = new(StringComparer.OrdinalIgnoreCase);
 
     public event Action<DiscoveredReceiver>? ReceiverDiscovered;
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
@@ -37,24 +45,32 @@ internal sealed class SenderHost : IAsyncDisposable
 
     public void UpdateOffer(string? selectedFile, string? sha256)
     {
-        if (string.IsNullOrWhiteSpace(selectedFile) || string.IsNullOrWhiteSpace(sha256))
+        lock (_stateLock)
         {
+            // Any file change revokes a previously issued receiver token.
             _offer = null;
-            return;
+            _offerFilePath = null;
+            _transferToken = null;
+            _acceptedReceiver = null;
+            _acceptedAt = default;
+
+            if (string.IsNullOrWhiteSpace(selectedFile) || string.IsNullOrWhiteSpace(sha256))
+                return;
+
+            if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
+                throw new ArgumentException("SHA-256 must contain 64 hexadecimal characters.", nameof(sha256));
+
+            var file = new FileInfo(selectedFile);
+            if (!file.Exists)
+                throw new FileNotFoundException("Selected package no longer exists.", selectedFile);
+
+            _offer = new TransferOffer(
+                "amega", 1, "transfer_offer", Guid.NewGuid().ToString("D"),
+                _senderId, file.Name, file.Length,
+                Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
+                sha256.ToLowerInvariant(), DateTimeOffset.UtcNow);
+            _offerFilePath = file.FullName;
         }
-
-        if (sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
-            throw new ArgumentException("SHA-256 must contain 64 hexadecimal characters.", nameof(sha256));
-
-        var file = new FileInfo(selectedFile);
-        if (!file.Exists)
-            throw new FileNotFoundException("Selected package no longer exists.", selectedFile);
-
-        _offer = new TransferOffer(
-            "amega", 1, "transfer_offer", Guid.NewGuid().ToString("D"),
-            _senderId, file.Name, file.Length,
-            Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
-            sha256.ToLowerInvariant(), DateTimeOffset.UtcNow);
     }
 
     public async Task StartAsync(string? selectedFile = null, string? sha256 = null)
@@ -80,21 +96,34 @@ internal sealed class SenderHost : IAsyncDisposable
         builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(DefaultHttpPort));
 
         var app = builder.Build();
-        app.MapGet("/api/v1/health", () => Results.Json(new
+        app.MapGet("/api/v1/health", () =>
         {
-            protocol = "amega",
-            major = 1,
-            status = "discovery_only",
-            offer_ready = _offer is not null,
-            sender_id = _senderId
-        }));
+            lock (_stateLock)
+            {
+                return Results.Json(new
+                {
+                    protocol = "amega",
+                    major = 1,
+                    status = "discovery_only",
+                    offer_ready = _offer is not null,
+                    receiver_authorized = _acceptedReceiver is not null && _transferToken is not null,
+                    sender_id = _senderId
+                });
+            }
+        });
         app.MapGet("/api/v1/offer", () =>
         {
-            IResult result = _offer is null
-                ? Results.Problem("No package has been selected and verified yet.", statusCode: 409)
-                : Results.Json(_offer);
-            return result;
+            lock (_stateLock)
+            {
+                IResult result = _offer is null
+                    ? Results.Problem("No package has been selected and verified yet.", statusCode: 409)
+                    : Results.Json(_offer);
+                return result;
+            }
         });
+        app.MapPost("/api/v1/accept", (AcceptTransferRequest request) => AcceptTransfer(request));
+        app.MapMethods("/api/v1/file", new[] { HttpMethods.Get, HttpMethods.Head },
+            (HttpContext context) => ServeAuthorizedFile(context));
 
         await app.StartAsync();
         _app = app;
@@ -217,8 +246,9 @@ internal sealed class SenderHost : IAsyncDisposable
                     continue;
 
                 var receiver = new DiscoveredReceiver(
-                    receiverId!, name.Trim(), datagram.RemoteEndPoint.Address.ToString(),
-                    version, DateTimeOffset.UtcNow);
+                    receiverId!, name.Trim(), datagram.RemoteEndPoint.Address.MapToIPv4().ToString(),
+                    version, nonce, DateTimeOffset.UtcNow);
+                _discoveredReceivers[receiver.ReceiverId] = receiver;
 
                 try { ReceiverDiscovered?.Invoke(receiver); }
                 catch { /* A UI subscriber must not terminate the network listener. */ }
@@ -229,6 +259,114 @@ internal sealed class SenderHost : IAsyncDisposable
             }
         }
     }
+
+    private IResult AcceptTransfer(AcceptTransferRequest request)
+    {
+        if (!Guid.TryParse(request.TransferId, out _) ||
+            !Guid.TryParse(request.ReceiverId, out _) ||
+            !IsHexNonce(request.InstanceNonce) ||
+            !string.Equals(request.ReplyToNonce, _instanceNonce, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { accepted = false, error = "invalid_pairing_request" });
+
+        if (!_discoveredReceivers.TryGetValue(request.ReceiverId, out DiscoveredReceiver? receiver) ||
+            !string.Equals(receiver.InstanceNonce, request.InstanceNonce, StringComparison.OrdinalIgnoreCase) ||
+            DateTimeOffset.UtcNow - receiver.LastSeen > TimeSpan.FromSeconds(15))
+            return Results.Problem("Receiver is not currently discovered. Refresh discovery and try again.", statusCode: 409);
+
+        lock (_stateLock)
+        {
+            if (_offer is null || _offerFilePath is null)
+                return Results.Problem("No verified package is ready.", statusCode: 409);
+
+            if (!string.Equals(request.TransferId, _offer.TransferId, StringComparison.OrdinalIgnoreCase))
+                return Results.Conflict(new { accepted = false, error = "offer_changed" });
+
+            if (_acceptedReceiver is not null &&
+                !string.Equals(_acceptedReceiver.ReceiverId, receiver.ReceiverId, StringComparison.OrdinalIgnoreCase) &&
+                DateTimeOffset.UtcNow - _acceptedAt < TimeSpan.FromMinutes(30))
+                return Results.Conflict(new { accepted = false, error = "another_receiver_is_authorized" });
+
+            if (_acceptedReceiver is null ||
+                !string.Equals(_acceptedReceiver.ReceiverId, receiver.ReceiverId, StringComparison.OrdinalIgnoreCase) ||
+                _transferToken is null ||
+                DateTimeOffset.UtcNow - _acceptedAt >= TimeSpan.FromMinutes(30))
+            {
+                _acceptedReceiver = receiver;
+                _transferToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+                _acceptedAt = DateTimeOffset.UtcNow;
+            }
+
+            return Results.Json(new
+            {
+                accepted = true,
+                transfer_id = _offer.TransferId,
+                access_token = _transferToken,
+                expires_in_seconds = 1800
+            });
+        }
+    }
+
+    private IResult ServeAuthorizedFile(HttpContext context)
+    {
+        string? suppliedToken = context.Request.Headers["X-AMEGA-Token"].FirstOrDefault();
+        string? path;
+        string? fileName;
+        string? sha256;
+        string? receiverIp;
+
+        lock (_stateLock)
+        {
+            if (_offer is null || _offerFilePath is null ||
+                _acceptedReceiver is null || _transferToken is null ||
+                DateTimeOffset.UtcNow - _acceptedAt >= TimeSpan.FromMinutes(30) ||
+                !FixedTimeTokenEquals(suppliedToken, _transferToken))
+                return Results.Unauthorized();
+
+            path = _offerFilePath;
+            fileName = _offer.FileName;
+            sha256 = _offer.Sha256;
+            receiverIp = _acceptedReceiver.IpAddress;
+        }
+
+        string? remoteIp = context.Connection.RemoteIpAddress?.MapToIPv4().ToString();
+        if (remoteIp is null || !string.Equals(remoteIp, receiverIp, StringComparison.OrdinalIgnoreCase))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        if (!System.IO.File.Exists(path))
+            return Results.Problem("Selected package is no longer available.", statusCode: 410);
+
+        try
+        {
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var etag = new EntityTagHeaderValue($"\\"{sha256}\\"");
+            return Results.File(stream, "application/octet-stream", fileName,
+                entityTag: etag, enableRangeProcessing: true);
+        }
+        catch (IOException)
+        {
+            return Results.Problem("Package could not be opened for reading.", statusCode: 409);
+        }
+    }
+
+    private static bool FixedTimeTokenEquals(string? supplied, string expected)
+    {
+        if (string.IsNullOrWhiteSpace(supplied) || supplied.Length != expected.Length)
+            return false;
+        try
+        {
+            byte[] a = Convert.FromHexString(supplied);
+            byte[] b = Convert.FromHexString(expected);
+            return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsHexNonce(string? value) =>
+        value is { Length: 32 } && value.All(Uri.IsHexDigit);
 
     private static List<LanInterface> GetLanInterfaces()
     {
@@ -327,6 +465,13 @@ internal sealed class SenderHost : IAsyncDisposable
 
     public async Task StopAsync()
     {
+        lock (_stateLock)
+        {
+            _transferToken = null;
+            _acceptedReceiver = null;
+            _acceptedAt = default;
+        }
+
         if (_cancellation is not null)
         {
             await _cancellation.CancelAsync();
