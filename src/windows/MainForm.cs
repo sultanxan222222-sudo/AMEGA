@@ -138,7 +138,7 @@ internal sealed class MainForm : Form
 
     private void UpdateActionButtons()
     {
-        _chooseButton.Enabled = true;
+        _chooseButton.Enabled = !_rpiInstallActive;
         _startButton.Enabled = !_isSearching;
         _stopButton.Enabled = _isSearching || _hashCts is not null;
 
@@ -537,8 +537,21 @@ internal sealed class MainForm : Form
                 target.IpAddress, packageUrl, CancellationToken.None);
             if (!result.Success || result.TaskId is null)
             {
-                _sender.RevokeRpiFileAccess();
-                _rpiStatusLabel.Text = $"RPI: {result.Message}";
+                if (result.MayHaveBeenAccepted)
+                {
+                    // The console can accept the install request and then
+                    // stop answering while it reads PKG metadata. Keep the
+                    // source alive until the user confirms the task is done.
+                    _rpiInstallActive = true;
+                    _rpiStatusLabel.Text = $"RPI: нет подтверждения номера задачи. {result.Message}";
+                    _statusLabel.Text =
+                        "Не отправляй тот же PKG повторно, пока не проверишь RPI на PS4: задача могла уже начаться. Источник файла оставлен открытым.";
+                }
+                else
+                {
+                    _sender.RevokeRpiFileAccess();
+                    _rpiStatusLabel.Text = $"RPI: {result.Message}";
+                }
                 return;
             }
 
