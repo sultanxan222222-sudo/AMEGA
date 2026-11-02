@@ -462,7 +462,7 @@ static bool acceptSelectedOffer()
     return true;
 }
 
-static void refreshLocalIp
+static void refreshLocalIp()
 {
     struct ifaddrs* interfaces = nullptr;
     if (getifaddrs(&interfaces) != 0) {
