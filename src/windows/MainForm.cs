@@ -25,6 +25,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<string, DiscoveredReceiver> _devices = new();
     private readonly SenderHost _sender = new();
     private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
+    private readonly System.Windows.Forms.Timer _rpiProgressTimer = new() { Interval = 1000 };
     private string? _selectedFile;
     private string? _selectedHash;
     private string? _selectedReceiverId;
@@ -114,6 +115,7 @@ internal sealed class MainForm : Form
 
         _sender.ReceiverDiscovered += ReceiverWasDiscovered;
         _deviceExpiryTimer.Tick += (_, _) => RemoveExpiredDevices();
+        _rpiProgressTimer.Tick += (_, _) => UpdateRpiTransferProgress();
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
         _sendButton.Click += SendClicked;
@@ -420,6 +422,37 @@ internal sealed class MainForm : Form
 
     private DiscoveredReceiver? GetRpiTarget() => GetSelectedReceiver() ?? _lastSelectedReceiver;
 
+    private void UpdateRpiTransferProgress()
+    {
+        if (!_rpiInstallActive)
+        {
+            _rpiProgressTimer.Stop();
+            return;
+        }
+
+        var progress = _sender.GetRpiTransferProgress();
+        if (!progress.IsActive || progress.TotalBytes <= 0)
+        {
+            _rpiStatusLabel.Text = "RPI: временный источник файла недоступен или истёк.";
+            _rpiProgressTimer.Stop();
+            return;
+        }
+
+        long delivered = Math.Clamp(progress.BytesServed, 0, progress.TotalBytes);
+        int percent = (int)(delivered * 100L / progress.TotalBytes);
+        string amount = $"{FormatBytes(delivered)} / {FormatBytes(progress.TotalBytes)}";
+
+        _rpiStatusLabel.Text = percent >= 100
+            ? $"Файл полностью отдан HTTP-запросам RPI ({amount}). PS4 ещё выполняет установку — проверь её экран."
+            : delivered > 0
+                ? $"RPI запрашивает PKG с ПК: {percent}% ({amount}). Не закрывай AMEGA."
+                : "RPI принял задачу. Ожидаю запросы PKG от PS4...";
+
+        if (percent >= 100)
+            _statusLabel.Text =
+                "Все диапазоны PKG отданы HTTP-сервером AMEGA. Это подтверждает получение данных сервером, но не завершение установки на PS4.";
+    }
+
     private async void CheckRpiClicked(object? sender, EventArgs e)
     {
         DiscoveredReceiver? target = GetRpiTarget();
@@ -472,6 +505,7 @@ internal sealed class MainForm : Form
             {
                 _sender.RevokeRpiFileAccess();
                 _rpiInstallActive = false;
+                _rpiProgressTimer.Stop();
                 _rpiStatusLabel.Text = "RPI: временный доступ к PKG закрыт.";
                 UpdateActionButtons();
             }
@@ -543,6 +577,7 @@ internal sealed class MainForm : Form
                     // stop answering while it reads PKG metadata. Keep the
                     // source alive until the user confirms the task is done.
                     _rpiInstallActive = true;
+                    _rpiProgressTimer.Start();
                     _rpiStatusLabel.Text = $"RPI: нет подтверждения номера задачи. {result.Message}";
                     _statusLabel.Text =
                         "Не отправляй тот же PKG повторно, пока не проверишь RPI на PS4: задача могла уже начаться. Источник файла оставлен открытым.";
@@ -556,6 +591,7 @@ internal sealed class MainForm : Form
             }
 
             _rpiInstallActive = true;
+            _rpiProgressTimer.Start();
             _rpiStatusLabel.Text = $"RPI принял задачу №{result.TaskId}. Ожидается скачивание PKG.";
             _statusLabel.Text =
                 "Задача передана RPI. Проверь её ход на PS4; AMEGA не заявляет об окончании установки. Оригинал на ПК сохранён.";
@@ -621,6 +657,7 @@ internal sealed class MainForm : Form
             if (choice != DialogResult.Yes) return;
             _sender.RevokeRpiFileAccess();
             _rpiInstallActive = false;
+            _rpiProgressTimer.Stop();
             _rpiStatusLabel.Text = "RPI: раздача остановлена пользователем.";
         }
         bool wasHashing = _hashCts is not null;
@@ -653,9 +690,12 @@ internal sealed class MainForm : Form
             }
             _sender.RevokeRpiFileAccess();
             _rpiInstallActive = false;
+            _rpiProgressTimer.Stop();
         }
         _hashCts?.Cancel();
         await StopSenderAsync();
+        _rpiProgressTimer.Stop();
+        _rpiProgressTimer.Dispose();
         await _sender.DisposeAsync();
         _rpiClient.Dispose();
     }
