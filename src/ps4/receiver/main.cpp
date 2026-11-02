@@ -17,6 +17,18 @@
 
 #include "font_ru.h"
 
+// OpenOrbis toolchain images in the wild do not all ship the newest
+// OrbisKernelSwVersion typedef. Keep the documented 0x28 ABI local so
+// this receiver can still build against older toolchain snapshots.
+#ifndef AMEGA_ORBIS_KERNEL_SW_VERSION_DEFINED
+#define AMEGA_ORBIS_KERNEL_SW_VERSION_DEFINED
+typedef struct {
+    size_t Size;
+    char VersionString[0x1C];
+    uint32_t Version;
+} OrbisKernelSwVersion;
+#endif
+
 static const int SENDER_DISCOVERY_PORT = 38470;
 static const int RECEIVER_DISCOVERY_PORT = 38472;
 static const int HTTP_PORT = 38471;
