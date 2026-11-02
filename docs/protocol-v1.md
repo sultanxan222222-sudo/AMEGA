@@ -1,103 +1,120 @@
 # AMEGA LAN protocol — version 1
 
-Status: bidirectional discovery plus explicit PC Send / PS4 Accept handshake. Windows authorization and Range-capable file serving are implemented; PS4 offer retrieval and accept are implemented. PS4 file download, staging, resume and receiver-side digest verification are still not implemented, so end-to-end transfer is not complete.
+**Status:** native file transfer, receiver-side resume and SHA-256 verification are implemented in the development branch and pass local integration tests. A real PS4 hardware run is still required.
 
 ## 1. Transport
 
-- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472.
-- Control and data: HTTP on the trusted home LAN; Windows HTTP service uses TCP 38471.
-- Plain HTTP is not secure on an untrusted network. Do not expose the service to the public Internet or a guest Wi-Fi network.
-- Messages are UTF-8 JSON unless an endpoint explicitly serves binary file data.
+- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast probes. PC-to-PS4 announcements use UDP 38470; PS4 replies use UDP 38472.
+- Control and data: HTTP on the trusted home LAN; Windows sender listens on TCP 38471.
+- Messages are UTF-8 JSON except the binary file endpoint.
 - Maximum discovery datagram: 1,200 bytes.
+- Current HTTP is plaintext. Do not expose the sender to the public Internet, guest Wi-Fi, or an untrusted LAN.
 
-## 2. Bidirectional discovery
+## 2. Discovery
 
-- Windows broadcasts sender announcements on UDP 38470 using each active adapter's actual subnet broadcast address; it also performs a bounded unicast sweep every 15 seconds.
-- PS4 listens on UDP 38470 and replies to the observed PC address on UDP 38472.
-- A reply includes the PS4 receiver UUID, a 32-character per-launch nonce, display name, receiver version, and the PC nonce echoed in reply_to_nonce.
-- Windows accepts a reply only if its UUID and nonce are valid and reply_to_nonce matches the current PC process nonce.
-- Windows stores the receiver's latest nonce and IP for a short-lived accept request.
+Windows sends sender announcements on UDP 38470 and listens for PS4 replies on UDP 38472. Each receiver announcement includes receiver UUID, per-launch nonce, display name, version, optional firmware string, and the PC nonce echoed in `reply_to_nonce`.
 
-Discovery is unauthenticated and grants no access. It contains no local file path, package contents, token, or hardware serial. Client isolation, VLAN separation, and host firewalls may still block peer traffic.
+Windows accepts a reply only when its UUID and nonce are valid and `reply_to_nonce` matches the current PC process nonce. PS4 stores each discovered PC's own nonce and IP in that sender's record; it does not use a global "last PC" nonce when accepting an offer.
 
-## 3. Offer metadata
+Discovery is unauthenticated and grants no file access.
 
-When a PKG is selected and its whole-file SHA-256 is complete, Windows exposes:
-- random transfer_id;
-- sender_id;
-- display filename (never a local absolute path);
-- exact file_size;
-- file_kind;
-- whole-file SHA-256;
-- creation time and protocol major version.
+## 3. Offer and explicit consent
 
-GET /api/v1/offer returns 409 until a verified offer is ready. GET /api/v1/health exposes offer_ready and receiver_authorized.
+Windows publishes an offer only after the PC user selects a discovered PS4 and presses **Send PKG**.
 
-## 4. Windows-side accept gate and binary file route
+The offer contains:
+- `transfer_id`: deterministic UUID derived from the first 128 bits of the normalized whole-file SHA-256 (with UUID version/variant bits set); the same file therefore keeps the same resume key across PC application restarts;
+- `sender_id`: current PC process UUID;
+- `file_name`: display name only, never an absolute path;
+- `file_size`: exact file length;
+- `file_kind`: `pkg`;
+- `sha256`: whole-file SHA-256;
+- `created_utc` and protocol major version.
 
-The Windows sender currently implements the server side of this stage. An outgoing offer is created only after the PC user selects a discovered PS4 and presses Send PKG. The offer is bound to that receiver UUID; changing the target revokes the previous offer and token.
+`GET /api/v1/offer` returns 409 until the PC user has prepared an offer for a selected receiver.
+
+The PS4 user selects a PC and presses Cross to fetch the offer. The receiver validates the protocol, message type, sender ID, transfer UUID, PKG kind, positive length, and 64-hex SHA-256 before displaying the package card.
 
 ### POST /api/v1/accept
 
-Request JSON:
-
+The PS4 sends:
 ```json
 {
-  "transfer_id": "current offer UUID",
-  "receiver_id": "discovered PS4 UUID",
-  "instance_nonce": "32 hexadecimal characters from latest PS4 beacon",
-  "reply_to_nonce": "current PC process nonce"
+  "transfer_id": "content-derived UUID",
+  "receiver_id": "PS4 receiver UUID",
+  "instance_nonce": "32 hexadecimal characters from the current PS4 process",
+  "reply_to_nonce": "32 hexadecimal characters from the selected PC process"
 }
 ```
 
-Validation:
-- transfer_id must match the current offer;
-- receiver_id and instance_nonce must match a receiver discovered within the last 15 seconds;
-- reply_to_nonce must match the current Windows process nonce;
-- only one receiver may hold an active token for the current offer.
+Windows checks:
+- transfer ID matches the current offer;
+- selected receiver UUID and nonce match a recent discovery entry;
+- reply-to nonce matches the current PC process nonce;
+- source IP matches the discovered PS4;
+- offer is still bound to that PS4.
 
-Successful response includes accepted=true, transfer_id, a cryptographically random 256-bit access_token, and an expiry of 1,800 seconds. A new offer, stop, or expiry revokes the token.
+A successful response contains `accepted: true`, the transfer ID, a random 256-bit `access_token`, and `expires_in_seconds: 1800`. Only one receiver may hold an active token for the current offer. Changing the offer or stopping the sender revokes it.
 
-**PS4 client behavior now implemented:** when the user selects a PC and presses Cross, the receiver requests GET /api/v1/offer and displays the filename, size and SHA-256. A second Cross on the offer screen sends POST /api/v1/accept using the receiver UUID, receiver nonce, and the selected PC nonce. The PS4 stores the returned access token in memory and shows an Accepted state. Circle returns to the previous screen. The PS4 does not yet issue GET /api/v1/file, so the file is not downloaded by this handshake alone.
+The PS4 keeps the token in memory only. It is not written to the resume file or log.
 
-### GET or HEAD /api/v1/file
+## 4. Binary download route
 
-The route is unavailable until POST /api/v1/accept succeeds. Requests must include:
-- header X-AMEGA-Token with the short-lived token;
-- source IP matching the PS4 receiver that was authorized.
+### GET /api/v1/file
 
-The route streams the selected file from disk; it does not load the whole PKG into RAM. It supports HTTP byte ranges through the ASP.NET Core file result:
-- a valid range returns 206 Partial Content and Content-Range;
-- an unsatisfiable range returns 416;
-- a complete GET returns 200;
-- ETag is set to the whole-file SHA-256.
+The PS4 downloads only after explicit Accept. Each request includes:
+- `X-AMEGA-Token`: current receiver-bound access token;
+- `Range: bytes=<offset>-`: actual number of bytes already stored in the partial file;
+- `If-Range: "<whole-file-sha256>"`: prevents resuming against a changed representation;
+- `Accept-Encoding: identity`.
 
-The receiver must still validate every Content-Range response and independently hash the full received file before marking it complete.
+Windows requires the correct token and source IP, then streams the selected file from disk.
 
-## 5. Remaining transfer behavior
+The receiver accepts only `206 Partial Content`. It validates:
+- `Content-Range` starts at the requested offset;
+- total length equals the offer's expected file size;
+- end offset is not before start;
+- `Content-Length` exactly matches the returned byte interval.
 
-Not yet implemented end-to-end:
-- PS4 range-download client using X-AMEGA-Token and validated Content-Range;
-- safe staging directory and free-space reservation;
-- persistent resume metadata and retry behavior;
-- receiver-side SHA-256 verification and final acknowledgement;
-- transfer status, speed, pause, cancel, and resume endpoints.
+A `200`, `416`, mismatched range, missing header, or expired token is not treated as a successful partial response.
 
-A transfer becomes COMPLETE only after the receiver confirms exact byte length and matching whole-file SHA-256. Installation is a separate action and must never start automatically.
+## 5. Staging, resume and verification
 
-## 6. Security limitations
+The PS4 receiver writes only into its own fixed directory:
+- temporary data: `/data/AMEGA/Download/<transfer_id>.part`;
+- resume metadata: `/data/AMEGA/Download/<transfer_id>.resume`;
+- final verified package: `/data/AMEGA/Download/<transfer_id>.pkg`.
 
-The current accept gate checks receiver ID, fresh discovery nonce, PC nonce echo, source IP, token entropy, token lifetime, and single-receiver scope. This is a useful local-LAN access gate, not production authentication:
-- discovery and HTTP control/data are still plaintext;
-- a device able to monitor or spoof traffic on the same LAN may be able to interfere;
-- the shared discovery nonce is not a secret.
+The network-supplied filename is display metadata only. It is never used as a filesystem path.
 
-Before a public/release build, add a user-visible pairing confirmation/code with rate limits and authenticated encrypted transport (TLS with correctly validated identity or an authenticated secure session). Do not claim the current prototype is secure on an untrusted network.
+Before receiving, the PS4:
+- validates the transfer UUID, access token and expected hash format;
+- creates the AMEGA staging directory;
+- checks available disk space, reserving an additional 16 MiB;
+- compares stored resume metadata with the transfer ID, expected length and SHA-256;
+- discards a partial file if its metadata does not match the current offer.
 
-## 7. Resume and integrity rules
+The receiver streams in bounded memory, updates its actual partial-file length, and syncs data periodically. If the connection is interrupted or the user presses Circle, the partial file and metadata remain. Pressing Cross again resumes from the actual partial-file length; after an app restart, the user must fetch and accept the same offer again to receive a fresh token.
 
-The receiver should persist transfer ID, expected size, SHA-256, safe destination, and verified byte offset. A resume request must validate the returned range and actual partial-file length. The final complete file must be hashed again; a mismatched digest results in FAILED_INTEGRITY and must not be offered for installation.
+After the expected byte length has been received, the PS4 independently calculates whole-file SHA-256. Only an exact digest match is renamed to the final `.pkg`. A digest mismatch deletes the partial file and resume metadata and leaves no completed package. The sender's original file is never deleted.
 
-## 8. Compatibility policy
+## 6. Transfer states and installation
 
-Minor additions may be optional. A breaking change requires a new major protocol version. Both apps must show a clear incompatibility message rather than attempting an unsafe downgrade.
+The UI distinguishes offer, accepted, downloading, paused/failed, and verified states. A file is not marked complete until receiver-side SHA-256 matches.
+
+**Installation is not implemented in the current prototype.** A verified PKG remains in the AMEGA Download folder. Any future RPI, GoldHEN or native installer integration must be a separate action with separate consent and a confirmed installer task result.
+
+## 7. Security limitations
+
+The current prototype implements receiver UUID/nonce validation, selected-target binding, source-IP checks, a random 256-bit token, 30-minute expiry, Range validation and receiver-side digest verification.
+
+This is still not production security because control/data are plaintext HTTP and local discovery is unauthenticated. Before a release on untrusted networks, add explicit pairing confirmation and authenticated encrypted transport.
+
+## 8. Automated tests and hardware acceptance
+
+CI includes:
+- SHA-256 known-answer tests for empty input, `abc`, and one million `a` bytes;
+- a local Range integration test that interrupts a 4,194,427-byte test transfer after 600,000 bytes, resumes from that exact offset, and verifies the resulting digest;
+- OpenOrbis PS4 compilation and PKG packaging.
+
+These tests do not prove a real PS4 will mount the package, reach Windows through every router, or write to its internal storage. Hardware acceptance remains open.
