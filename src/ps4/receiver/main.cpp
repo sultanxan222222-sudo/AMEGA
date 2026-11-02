@@ -174,13 +174,13 @@ static void refreshFirmwareVersion()
 
     char raw[sizeof(version.VersionString) + 1] = {};
     memcpy(raw, version.VersionString, sizeof(version.VersionString));
-    raw[sizeof(version.VersionString)] = '\\0';
+    raw[sizeof(version.VersionString)] = '\0';
 
     char* start = raw;
     while (*start && isspace((unsigned char)*start)) ++start;
     size_t length = strlen(start);
     while (length > 0 && isspace((unsigned char)start[length - 1]))
-        start[--length] = '\\0';
+        start[--length] = '\0';
 
     // The version field should be plain digits and dots. Reject unexpected
     // bytes rather than placing untrusted system data directly into JSON.
