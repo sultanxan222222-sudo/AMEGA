@@ -20,11 +20,20 @@ The current development target is a trusted private home LAN. Discovery and HTTP
 - The receiver independently hashes the completed file. Only an exact digest match is renamed to the final PKG.
 - The sender's original package is never deleted automatically.
 
+### Optional Standalone RPI source endpoint
+
+- The RPI adapter is separate from AMEGA's native receiver and sends an install request only after a Windows confirmation dialog.
+- The PC hosts one temporary URL for the selected PKG; peer-supplied names are not used as paths.
+- The endpoint accepts GET/HEAD from the selected console IPv4 address only, supports HTTP Range/ETag, and expires after 12 hours or when the user revokes it.
+- The source endpoint does not use the native AMEGA bearer token. IP restriction is a LAN-scoped guard, not strong authentication: keep it on a trusted private LAN.
+- If the RPI install POST times out or returns success without a task ID, AMEGA leaves the source open and warns that the task may already have been accepted. The user must check the PS4 before retrying or revoking the source.
+- A 100% unique-range coverage indicator means all file byte intervals were read by the HTTP response stream. It is not proof that the PKG was installed.
+
 These controls reduce accidental access and corruption on a trusted LAN. They are not a substitute for authenticated encryption or a pairing code against an active LAN attacker.
 
 ## Required before release
 
-1. **Explicit consent on both ends:** no transfer starts until the PS4 user accepts. Installation remains a separate future action.
+1. **Explicit consent on both ends:** native transfer starts only after the PS4 user accepts. RPI installation requires a separate Windows confirmation and the Standalone RPI app must be open on the PS4.
 2. **Pairing confirmation:** implement a short-lived code displayed on both screens, compare it, and rate-limit retries. The current prototype does not yet implement this user-facing code.
 3. **Authenticated transport:** replace plaintext HTTP with TLS whose identity is validated correctly, or another authenticated encrypted session.
 4. **Token handling:** never log, display in ordinary UI, or place the token in a URL. Revoke on cancel, app exit, expiry or offer change.
