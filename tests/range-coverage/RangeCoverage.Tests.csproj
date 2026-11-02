@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="../../src/windows/Networking/ByteRangeCoverage.cs" Link="ByteRangeCoverage.cs" />
     <Compile Include="../../src/windows/Networking/RangeTrackingReadStream.cs" Link="RangeTrackingReadStream.cs" />
+    <Compile Include="../../src/windows/Networking/RpiTaskProgressParser.cs" Link="RpiTaskProgressParser.cs" />
   </ItemGroup>
 </Project>
