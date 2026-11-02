@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -370,11 +371,39 @@ static bool httpJsonRequest(const char* ip, int port, const char* method,
     size_t responseLength = total - (size_t)(responseBody - raw);
     if (responseLength + 1 > bodyCap) return false;
 
-    // Kestrel sends a Content-Length for these small JSON responses. Reject
-    // chunked or otherwise incomplete bodies instead of parsing partial JSON.
-    if (strstr(raw, "Transfer-Encoding: chunked") ||
-        strstr(raw, "transfer-encoding: chunked"))
+    // These small JSON endpoints must be length-delimited. Reject a
+    // truncated body or an unexpected chunked response before parsing JSON.
+    char contentLengthText[64] = {};
+    bool hasContentLength = false;
+    const char* line = std::strstr(raw, "\r\n");
+    if (line) line += 2;
+    while (line && line < headerEnd) {
+        const char* end = std::strstr(line, "\r\n");
+        if (!end || end > headerEnd) end = headerEnd;
+        if (static_cast<size_t>(end - line) >= 19 &&
+            strncasecmp(line, "Content-Length:", 15) == 0) {
+            const char* value = line + 15;
+            while (value < end && (*value == ' ' || *value == '\t')) ++value;
+            size_t length = static_cast<size_t>(end - value);
+            if (length == 0 || length >= sizeof(contentLengthText)) return false;
+            std::memcpy(contentLengthText, value, length);
+            contentLengthText[length] = 0;
+            hasContentLength = true;
+        }
+        if (static_cast<size_t>(end - line) >= 18 &&
+            strncasecmp(line, "Transfer-Encoding:", 18) == 0)
+            return false;
+        if (end == headerEnd) break;
+        line = end + 2;
+    }
+
+    if (!hasContentLength) return false;
+    char* lengthEnd = nullptr;
+    unsigned long long expectedLength = std::strtoull(contentLengthText, &lengthEnd, 10);
+    if (lengthEnd == contentLengthText || *lengthEnd != 0 ||
+        expectedLength != responseLength)
         return false;
+
     memcpy(bodyOut, responseBody, responseLength);
     bodyOut[responseLength] = 0;
     return true;
