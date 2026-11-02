@@ -14,7 +14,7 @@ The network protocol is transport-oriented. The UI and the PS4 installation adap
 
 ## 2. Network topology
 
-The Windows application is the only active discoverer and temporary HTTP(S) file host. It enumerates active IPv4 adapters and their real subnet masks, sends directed broadcasts plus bounded unicast probes to UDP 38470 from its fixed UDP 38472 socket, and listens for nonce-bound PS4 replies on UDP 38472. The PS4 stays in standby: it binds UDP 38470, waits for a PC probe, records that PC in its visible list, and unicasts a reply to the PC. It does not run its own periodic discovery broadcast. This creates a clear one-searcher/one-responder model and avoids two independent discovery loops.
+The Windows application is the only active discoverer and temporary HTTP(S) file host. It enumerates active IPv4 adapters and their real subnet masks, sends directed broadcasts plus bounded unicast probes to UDP 38470 from its fixed UDP 38472 socket, and listens for nonce-bound PS4 replies on UDP 38472. The PS4 stays in standby: it initializes `libSceNet`/`libSceNetCtl` and the required socket pool, binds UDP 38470, waits for a PC probe, records that PC in its visible list, and unicasts a reply to the PC. Its displayed local address is read from `sceNetCtlGetInfo` with a validated interface-enumeration fallback. It does not run its own periodic discovery broadcast. This creates a clear one-searcher/one-responder model and avoids two independent discovery loops.
 
 The beacon contains only discovery metadata: protocol version, sender instance ID, listening port, and a short-lived nonce. It must not contain a file path, package contents, or authentication secret.
 
