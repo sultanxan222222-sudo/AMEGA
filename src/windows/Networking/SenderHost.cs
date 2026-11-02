@@ -339,7 +339,7 @@ internal sealed class SenderHost : IAsyncDisposable
         {
             var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var etag = new EntityTagHeaderValue($"\\"{sha256}\\"");
+            var etag = new EntityTagHeaderValue($"\"{sha256}\"");
             return Results.File(stream, "application/octet-stream", fileName,
                 entityTag: etag, enableRangeProcessing: true);
         }
