@@ -32,7 +32,7 @@ The transfer ID is derived from the PKG's SHA-256, so the same package can resum
 ## What is not yet complete
 
 - A native AMEGA/GoldHEN installer is not implemented. The optional installer path uses the separate Standalone Remote Package Installer app (RPI) on TCP 12800; RPI must be installed and kept open in the PS4 foreground.
-- The RPI task is submitted and its task ID is reported when available. The current UI does not yet independently confirm the final INSTALLED state through RPI task polling; check the console before treating installation as complete.
+- When RPI returns a task ID, AMEGA polls `/api/get_task_progress` for console-reported transfer and local-copy progress. If RPI is busy and stops answering during the download, AMEGA falls back to unique HTTP byte coverage and retries. It reports completion only after RPI reports all bytes transferred and `local_copy_percent` at 100%; this remains an API report and should be checked on the console.
 - GoldHEN's separate built-in Remote Package Install, FTP and BinLoader adapters are not enabled. HEN alone does not imply that Standalone RPI is installed or running.
 - Pairing code and authenticated encrypted transport are still required before calling the protocol secure on an untrusted network. Both native transfer and temporary RPI file hosting use plaintext HTTP on a trusted private LAN.
 - Real-hardware testing on the user's PS4 Pro is still required. CI success and local mock-server tests do not prove the apps work on the console, on every firmware, or through every router.
