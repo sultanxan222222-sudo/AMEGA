@@ -27,22 +27,20 @@ internal sealed class RpiInstallerClient : IDisposable
         };
         _httpClient = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(8)
+            Timeout = Timeout.InfiniteTimeSpan
         };
     }
 
     public async Task<RpiProbeResult> ProbeAsync(string consoleIp, CancellationToken cancellationToken)
     {
         var reply = await PostAsync(consoleIp, "/api/is_exists",
-            new { title_id = "CUSA00000" }, cancellationToken);
-
-        if (reply.StatusCode is < 200 or >= 300)
-            return new RpiProbeResult(false,
-                $"RPI не подтвердил готовность (HTTP {reply.StatusCode}). {FormatError(reply.Body)}");
+            new { title_id = "CUSA00000" }, TimeSpan.FromSeconds(8), cancellationToken);
 
         if (!TryReadStatus(reply.Body, out string status))
             return new RpiProbeResult(false,
-                "На порту 12800 получен ответ, но это не ответ API Remote Package Installer.");
+                reply.StatusCode == 0
+                    ? $"RPI не отвечает на TCP {_port}. {reply.Body}"
+                    : $"На порту {_port} получен ответ HTTP {reply.StatusCode}, но это не ответ API Remote Package Installer.");
 
         // is_exists is deliberately a read-only probe. A 'fail' response can
         // still prove the API is alive when the harmless test title is absent.
@@ -65,8 +63,16 @@ internal sealed class RpiInstallerClient : IDisposable
             !IsPrivateIPv4(fileHost))
             return new RpiInstallResult(false, null, "RPI разрешён только локальный URL AMEGA для выбранного PKG.");
 
+        // RPI reads package metadata synchronously before replying. This can
+        // take much longer than the lightweight readiness check.
         var reply = await PostAsync(consoleIp, "/api/install",
-            new { type = "direct", packages = new[] { packageUrl } }, cancellationToken);
+            new { type = "direct", packages = new[] { packageUrl } },
+            TimeSpan.FromSeconds(150), cancellationToken);
+
+        if (reply.StatusCode == 0)
+            return new RpiInstallResult(false, null,
+                $"Нет подтверждения от RPI: {reply.Body} Задача могла быть принята; не закрывай AMEGA, пока не проверишь PS4.",
+                MayHaveBeenAccepted: true);
 
         if (reply.StatusCode is < 200 or >= 300)
             return new RpiInstallResult(false, null,
@@ -83,13 +89,15 @@ internal sealed class RpiInstallerClient : IDisposable
         if (!taskMatch.Success ||
             !long.TryParse(taskMatch.Groups["id"].Value, out long taskId))
             return new RpiInstallResult(false, null,
-                "RPI ответил success, но не вернул номер задачи. Проверь состояние на PS4.");
+                "RPI ответил success, но не вернул номер задачи. Проверь состояние на PS4; пока не закрывай AMEGA.",
+                MayHaveBeenAccepted: true);
 
         return new RpiInstallResult(true, taskId, $"RPI принял задачу №{taskId}.");
     }
 
     private async Task<RpiHttpReply> PostAsync(
-        string consoleIp, string path, object payload, CancellationToken cancellationToken)
+        string consoleIp, string path, object payload, TimeSpan requestTimeout,
+        CancellationToken cancellationToken)
     {
         if (!IPAddress.TryParse(consoleIp, out IPAddress? address) ||
             address.AddressFamily != AddressFamily.InterNetwork ||
@@ -104,7 +112,7 @@ internal sealed class RpiInstallerClient : IDisposable
         };
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        timeout.CancelAfter(requestTimeout);
 
         try
         {
@@ -187,4 +195,5 @@ internal sealed class RpiInstallerClient : IDisposable
 }
 
 internal sealed record RpiProbeResult(bool IsResponsive, string Message);
-internal sealed record RpiInstallResult(bool Success, long? TaskId, string Message);
+internal sealed record RpiInstallResult(
+    bool Success, long? TaskId, string Message, bool MayHaveBeenAccepted = false);
