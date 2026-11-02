@@ -53,11 +53,9 @@ static int g_selected = -1;
 static int g_socket = -1;
 static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
-static char g_lastSenderNonce[160] = {};
-static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
+static char g_status[128] = "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ С ПК";
 static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
 static char g_firmwareVersion[48] = "НЕ ОПРЕДЕЛЕНА";
-static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
 static SDL_GameController* g_gameController = nullptr;
 static Uint32 g_lastNetworkRefresh = 0;
@@ -706,9 +704,9 @@ static void refreshFirmwareVersion()
     writeStartupLog(message);
 }
 
-static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
+static void sendAnnouncement(const sockaddr_in& unicastTarget, const char* replyToNonce)
 {
-    if (g_socket < 0 || !g_lastSenderNonce[0]) return;
+    if (g_socket < 0 || !replyToNonce || strlen(replyToNonce) != 32) return;
 
     char payload[640];
     snprintf(payload, sizeof(payload),
@@ -717,59 +715,30 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
         "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
         "\"firmware_version\":\"%s\",\"reply_to_nonce\":\"%s\"}",
-        g_receiverId, g_nonce, g_firmwareVersion, g_lastSenderNonce);
+        g_receiverId, g_nonce, g_firmwareVersion, replyToNonce);
 
-    if (unicastTarget) {
-        sockaddr_in target = *unicastTarget;
-        const uint16_t originalPort = target.sin_port;
+    sockaddr_in target = unicastTarget;
+    const uint16_t originalPort = target.sin_port;
 
-        // Primary reply: the documented fixed Windows discovery listener.
-        target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+    // PS4 is a responder, not an active discoverer: reply only to the PC
+    // which sent a discovery probe. The current PC listens on fixed UDP 38472.
+    target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
+    if (sendto(g_socket, payload, strlen(payload), 0,
+        reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) {
+        char message[96];
+        snprintf(message, sizeof(message), "Unicast discovery reply failed: errno=%d", errno);
+        writeStartupLog(message);
+    }
+
+    // Compatibility for older senders that receive on the beacon source port.
+    if (originalPort != htons(RECEIVER_DISCOVERY_PORT)) {
+        target.sin_port = originalPort;
         if (sendto(g_socket, payload, strlen(payload), 0,
             reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) {
             char message[96];
-            snprintf(message, sizeof(message), "Unicast discovery reply failed: errno=%d", errno);
+            snprintf(message, sizeof(message), "Compatibility discovery reply failed: errno=%d", errno);
             writeStartupLog(message);
         }
-
-        // Compatibility reply: also answer the datagram's actual source port.
-        // Older/alternate PC builds may listen on the ephemeral port they used
-        // to send the beacon. Current Windows AMEGA listens on 38472.
-        if (originalPort != htons(RECEIVER_DISCOVERY_PORT)) {
-            target.sin_port = originalPort;
-            if (sendto(g_socket, payload, strlen(payload), 0,
-                reinterpret_cast<sockaddr*>(&target), sizeof(target)) < 0) {
-                char message[96];
-                snprintf(message, sizeof(message), "Compatibility discovery reply failed: errno=%d", errno);
-                writeStartupLog(message);
-            }
-        }
-        return;
-    }
-
-    struct ifaddrs* interfaces = nullptr;
-    bool sent = false;
-    if (getifaddrs(&interfaces) == 0) {
-        for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
-            if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
-                !(item->ifa_flags & IFF_UP) || !(item->ifa_flags & IFF_BROADCAST) ||
-                (item->ifa_flags & IFF_LOOPBACK) || !item->ifa_broadaddr)
-                continue;
-            sockaddr_in target = *reinterpret_cast<sockaddr_in*>(item->ifa_broadaddr);
-            target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
-            if (sendto(g_socket, payload, strlen(payload), 0,
-                reinterpret_cast<sockaddr*>(&target), sizeof(target)) >= 0)
-                sent = true;
-        }
-        freeifaddrs(interfaces);
-    }
-    if (!sent) {
-        sockaddr_in target = {};
-        target.sin_family = AF_INET;
-        target.sin_port = htons(RECEIVER_DISCOVERY_PORT);
-        target.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-        sendto(g_socket, payload, strlen(payload), 0,
-            reinterpret_cast<sockaddr*>(&target), sizeof(target));
     }
 }
 
@@ -813,24 +782,19 @@ static void updateSender(const char* json, const sockaddr_in& from)
     entry.httpPort = port;
     entry.lastSeen = SDL_GetTicks();
     entry.used = true;
-    snprintf(g_lastSenderNonce, sizeof(g_lastSenderNonce), "%s", nonce);
 
-    // Preserve the sender's source port. sendAnnouncement also emits the
-    // fixed-port reply used by current AMEGA Windows builds.
-    sendAnnouncement(&from);
+    // Respond only to the PC probe; this PS4 does not broadcast discovery.
+    sendAnnouncement(from, nonce);
 
     if (g_selected < 0) g_selected = slot;
-    snprintf(g_status, sizeof(g_status), "НАЙДЕН КОМПЬЮТЕР: %s", name);
+    snprintf(g_status, sizeof(g_status), "ПК НАЙДЕН: %s", name);
 }
 
 static void pollNetwork()
 {
     const Uint32 now = SDL_GetTicks();
-    if (now - g_lastBeacon >= 3000) {
-        sendAnnouncement(nullptr);
-        g_lastBeacon = now;
-    }
 
+    // Standby mode: listen for PC discovery probes and answer each one.
     if (g_socket >= 0) {
         for (;;) {
             char buffer[1201] = {};
@@ -1037,15 +1001,15 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         drawText(renderer, 64, 685, "УСТАНОВКА ИГРЫ ОСТАЁТСЯ ОТДЕЛЬНЫМ ДЕЙСТВИЕМ", MUTED, 1);
     } else {
         fill(renderer, 60, 185, 1160, 2, PANEL2);
-        drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ В СЕТИ", GOLD, 2);
+        drawText(renderer, 64, 218, "КОМПЬЮТЕРЫ, НАШЕДШИЕ PS4", GOLD, 2);
 
         int count = 0;
         for (int i = 0; i < MAX_SENDERS; ++i) if (g_senders[i].used) ++count;
 
         if (count == 0) {
             fill(renderer, 60, 275, 1160, 150, PANEL);
-            drawText(renderer, 96, 320, "ИЩУ КОМПЬЮТЕР AMEGA...", TEXT, 2);
-            drawText(renderer, 96, 370, "ПК И PS4 ДОЛЖНЫ БЫТЬ В ОДНОЙ WI-FI СЕТИ", MUTED, 1);
+            drawText(renderer, 96, 320, "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ С ПК...", TEXT, 2);
+            drawText(renderer, 96, 370, "НА ПК НАЖМИ ИСКАТЬ PS4 — КОНСОЛЬ ОТВЕТИТ", MUTED, 1);
         } else {
             int row = 0;
             for (int i = 0; i < MAX_SENDERS; ++i) {
