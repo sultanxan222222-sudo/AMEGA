@@ -66,7 +66,7 @@ Any RPI route requires correct HTTP Range handling: `206 Partial Content`, `Cont
 
 OpenOrbis headers provide networking APIs, `sceNetCtl` network information, `scePad` controller APIs, `sceVideoOut` output APIs, system-module calls and AppInstUtil declarations. The public toolchain warns that header/stub coverage may be incomplete or need updates. AMEGA may use these APIs only behind tested adapters.
 
-- Current receiver uses POSIX sockets and `getifaddrs`; future network diagnostics may compare them with `sceNetCtlGetInfo` (IP, netmask, route, SSID/RSSI).
+- Current receiver initializes `libSceNet` and `libSceNetCtl`, creates the required Net pool before any BSD socket call, and gets the console IPv4 address primarily through `sceNetCtlGetInfo(ORBIS_NET_CTL_INFO_IP_ADDRESS)`. `getifaddrs` is retained only as a validated fallback; loopback, link-local, unspecified and multicast addresses are rejected.
 - Current controller uses SDL joystick events; `scePadRead` may serve as a native fallback after hardware testing.
 - Keep SDL as the working renderer; direct VideoOut/GPU code requires a complete buffer/flip lifecycle, not just a function call.
 - Do not directly call AppInstUtil as the default installer. Reverse-engineering research documents a proof of concept that returned success but produced a package whose title later failed due to filesystem block mapping. The API declaration itself is not proof of safe installation.
