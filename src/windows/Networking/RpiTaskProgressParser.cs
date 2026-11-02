@@ -41,18 +41,18 @@ internal static class RpiTaskProgressParser
 
     private static bool TryReadString(string body, string name, out string value)
     {
-        Match match = Regex.Match(body,
-            "\\"" + Regex.Escape(name) + "\\"\\s*:\\s*\\"(?<value>[^\\"]*)\\"",
-            RegexOptions.CultureInvariant);
+        string quote = ((char)34).ToString();
+        string pattern = quote + Regex.Escape(name) + quote + @"\s*:\s*" + quote + @"(?<value>[^" + quote + @"]*)" + quote;
+        Match match = Regex.Match(body, pattern, RegexOptions.CultureInvariant);
         value = match.Success ? match.Groups["value"].Value : string.Empty;
         return match.Success;
     }
 
     private static bool TryReadInteger(string body, string name, out long value)
     {
-        Match match = Regex.Match(body,
-            "\\"" + Regex.Escape(name) + "\\"\\s*:\\s*(?<value>0[xX][0-9a-fA-F]+|-?[0-9]+)",
-            RegexOptions.CultureInvariant);
+        string quote = ((char)34).ToString();
+        string pattern = quote + Regex.Escape(name) + quote + @"\s*:\s*(?<value>0[xX][0-9a-fA-F]+|-?[0-9]+)";
+        Match match = Regex.Match(body, pattern, RegexOptions.CultureInvariant);
         if (!match.Success)
         {
             value = 0;
@@ -61,10 +61,7 @@ internal static class RpiTaskProgressParser
 
         string raw = match.Groups["value"].Value;
         if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-        {
-            return long.TryParse(raw.AsSpan(2), NumberStyles.HexNumber,
-                CultureInfo.InvariantCulture, out value);
-        }
+            return long.TryParse(raw.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
         return long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
     }
 }
