@@ -139,7 +139,7 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "{\"protocol\":\"amega\",\"major\":1,"
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
-        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.0\","
+        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
         "\"reply_to_nonce\":\"%s\"}",
         g_receiverId, g_nonce, g_lastSenderNonce);
 
@@ -569,7 +569,7 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.1 startup");
+    writeStartupLog("AMEGA 0.2.2 startup");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         char message[256];
