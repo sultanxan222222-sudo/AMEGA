@@ -25,7 +25,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<string, DiscoveredReceiver> _devices = new();
     private readonly SenderHost _sender = new();
     private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
-    private readonly System.Windows.Forms.Timer _rpiProgressTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _rpiProgressTimer = new() { Interval = 4000 };
     private string? _selectedFile;
     private string? _selectedHash;
     private string? _selectedReceiverId;
@@ -39,6 +39,9 @@ internal sealed class MainForm : Form
     private bool _rpiBusy;
     private bool _rpiInstallActive;
     private bool _rpiInstallRequestInFlight;
+    private long? _rpiTaskId;
+    private string? _rpiTaskConsoleIp;
+    private bool _rpiPollInFlight;
 
     public MainForm()
     {
@@ -424,12 +427,46 @@ internal sealed class MainForm : Form
 
     private DiscoveredReceiver? GetRpiTarget() => GetSelectedReceiver() ?? _lastSelectedReceiver;
 
-    private void UpdateRpiTransferProgress()
+    private async void UpdateRpiTransferProgress()
     {
-        if (!_rpiInstallActive)
+        if (!_rpiInstallActive) { _rpiProgressTimer.Stop(); return; }
+
+        if (_rpiTaskId is long taskId && !string.IsNullOrWhiteSpace(_rpiTaskConsoleIp) && !_rpiPollInFlight)
         {
-            _rpiProgressTimer.Stop();
-            return;
+            _rpiPollInFlight = true;
+            try
+            {
+                RpiTaskProgress? task = await _rpiClient.GetTaskProgressAsync(_rpiTaskConsoleIp, taskId, CancellationToken.None);
+                if (task is not null)
+                {
+                    if (task.ErrorCode != 0)
+                    {
+                        _rpiStatusLabel.Text = $"RPI сообщил ошибку задачи №{taskId}: 0x{unchecked((uint)task.ErrorCode):X8}. Проверь PS4.";
+                        _statusLabel.Text = "RPI вернул ошибку задачи. Исходный PKG на компьютере сохранён; проверь сообщение на приставке.";
+                        _rpiProgressTimer.Stop();
+                        return;
+                    }
+                    long total = task.TotalBytes;
+                    long transferred = Math.Clamp(task.TransferredBytes, 0, Math.Max(0, total));
+                    int percent = total > 0 ? (int)Math.Clamp((double)transferred * 100d / total, 0d, 100d) : 0;
+                    string amount = total > 0 ? $"{FormatBytes(transferred)} / {FormatBytes(total)}" : "размер пока не сообщён";
+                    string phase = task.PreparingPercent < 100 && transferred == 0 ? $"подготовка {task.PreparingPercent}%" :
+                        transferred < total ? "загрузка" : task.LocalCopyPercent < 100 ? $"установка на PS4 {task.LocalCopyPercent}%" : "установка завершена";
+                    _rpiStatusLabel.Text = $"RPI задача №{taskId}: {phase}; передано {percent}% ({amount}).";
+                    if (total > 0 && transferred >= total && task.LocalCopyPercent >= 100)
+                    {
+                        _rpiStatusLabel.Text = $"RPI подтвердил завершение задачи №{taskId}: PKG передан и локальное копирование завершено.";
+                        _statusLabel.Text = "Получено подтверждение завершения от Standalone RPI. Исходный PKG на ПК не удалён; временный сетевой доступ можно закрыть.";
+                        _rpiProgressTimer.Stop();
+                    }
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _rpiStatusLabel.Text = $"RPI API временно не отвечает; использую данные HTTP-источника. {ex.Message}";
+            }
+            finally { _rpiPollInFlight = false; }
         }
 
         var progress = _sender.GetRpiTransferProgress();
@@ -439,22 +476,16 @@ internal sealed class MainForm : Form
             _rpiProgressTimer.Stop();
             return;
         }
-
         long delivered = Math.Clamp(progress.BytesServed, 0, progress.TotalBytes);
-        int percent = (int)(delivered * 100L / progress.TotalBytes);
-        string amount = $"{FormatBytes(delivered)} / {FormatBytes(progress.TotalBytes)}";
-
-        _rpiStatusLabel.Text = percent >= 100
-            ? $"HTTP-поток прочитал все диапазоны PKG для RPI ({amount}). Это не подтверждает получение всех байтов консолью или завершение установки."
-            : delivered > 0
-                ? $"RPI запрашивает PKG с ПК: {percent}% ({amount}). Не закрывай AMEGA."
-                : "RPI принял задачу. Ожидаю запросы PKG от PS4...";
-
-        if (percent >= 100)
-            _statusLabel.Text =
-                "HTTP-сервер AMEGA прочитал все диапазоны PKG для ответов RPI. Это не подтверждает получение всех байтов консолью и не означает завершение установки.";
+        int sourcePercent = (int)(delivered * 100L / progress.TotalBytes);
+        string sourceAmount = $"{FormatBytes(delivered)} / {FormatBytes(progress.TotalBytes)}";
+        _rpiStatusLabel.Text = sourcePercent >= 100
+            ? $"Источник ПК прочитал все диапазоны PKG ({sourceAmount}). Ожидаю подтверждение RPI об установке."
+            : delivered > 0 ? $"RPI запрашивает PKG с ПК: {sourcePercent}% ({sourceAmount}). Не закрывай AMEGA."
+            : "RPI принял задачу. Ожидаю запросы PKG от PS4...";
+        if (sourcePercent >= 100)
+            _statusLabel.Text = "Все диапазоны PKG прочитаны HTTP-источником ПК. Это ещё не подтверждение завершения установки на PS4.";
     }
-
     private async void CheckRpiClicked(object? sender, EventArgs e)
     {
         DiscoveredReceiver? target = GetRpiTarget();
@@ -595,6 +626,8 @@ internal sealed class MainForm : Form
             }
 
             _rpiInstallActive = true;
+            _rpiTaskId = result.TaskId;
+            _rpiTaskConsoleIp = target.IpAddress;
             _rpiProgressTimer.Start();
             _rpiStatusLabel.Text = $"RPI принял задачу №{result.TaskId}. Ожидается скачивание PKG.";
             _statusLabel.Text =
