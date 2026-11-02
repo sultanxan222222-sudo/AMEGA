@@ -36,6 +36,9 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -o artifacts/windows
 
+      - name: Include private-LAN firewall helper
+        run: Copy-Item src/windows/Allow-AMEGA-Firewall.ps1 artifacts/windows/
+
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         with:
