@@ -237,17 +237,23 @@ internal sealed class SenderHost : IAsyncDisposable
                 string? echoedNonce = ReadString(root, "reply_to_nonce");
                 string? name = ReadString(root, "display_name");
                 string? version = ReadString(root, "receiver_version");
+                string? firmwareVersion = ReadString(root, "firmware_version");
 
                 if (!Guid.TryParse(receiverId, out _) ||
                     nonce is null || nonce.Length != 32 || !nonce.All(Uri.IsHexDigit) ||
                     !string.Equals(echoedNonce, _instanceNonce, StringComparison.OrdinalIgnoreCase) ||
                     string.IsNullOrWhiteSpace(name) || name.Length > 48 ||
-                    string.IsNullOrWhiteSpace(version) || version.Length > 32)
+                    string.IsNullOrWhiteSpace(version) || version.Length > 32 ||
+                    (firmwareVersion is not null && firmwareVersion.Length > 32))
                     continue;
+
+                firmwareVersion = string.IsNullOrWhiteSpace(firmwareVersion)
+                    ? "не определена"
+                    : firmwareVersion.Trim();
 
                 var receiver = new DiscoveredReceiver(
                     receiverId!, name.Trim(), datagram.RemoteEndPoint.Address.MapToIPv4().ToString(),
-                    version, nonce, DateTimeOffset.UtcNow);
+                    version, firmwareVersion, nonce, DateTimeOffset.UtcNow);
                 _discoveredReceivers[receiver.ReceiverId] = receiver;
 
                 try { ReceiverDiscovered?.Invoke(receiver); }
