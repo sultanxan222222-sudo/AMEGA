@@ -39,7 +39,6 @@ static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
 static char g_localIp[64] = "НЕ ОПРЕДЕЛЁН";
-static char g_firmwareVersion[64] = "НЕ ОПРЕДЕЛЕНА";
 static Uint32 g_lastBeacon = 0;
 static SDL_Joystick* g_controller = nullptr;
 static SDL_GameController* g_gameController = nullptr;
@@ -159,37 +158,6 @@ static void refreshLocalIp()
     }
     freeifaddrs(interfaces);
     if (!found) snprintf(g_localIp, sizeof(g_localIp), "НЕТ IPv4 СЕТИ");
-}
-
-static void detectFirmwareVersion()
-{
-    OrbisKernelSwVersion info = {};
-    info.Size = sizeof(info);
-
-    const int result = sceKernelGetSystemSwVersion(&info);
-    if (result != 0) {
-        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "НЕ ОПРЕДЕЛЕНА");
-        char logLine[128];
-        snprintf(logLine, sizeof(logLine), "sceKernelGetSystemSwVersion failed: 0x%08X", (unsigned int)result);
-        writeStartupLog(logLine);
-        return;
-    }
-
-    char version[sizeof(info.VersionString) + 1] = {};
-    memcpy(version, info.VersionString, sizeof(info.VersionString));
-    version[sizeof(info.VersionString)] = 0;
-
-    char* first = version;
-    while (*first && isspace((unsigned char)*first)) ++first;
-    if (*first) {
-        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "%s", first);
-    } else {
-        snprintf(g_firmwareVersion, sizeof(g_firmwareVersion), "0x%08X", info.Version);
-    }
-
-    char logLine[128];
-    snprintf(logLine, sizeof(logLine), "System software: %s", g_firmwareVersion);
-    writeStartupLog(logLine);
 }
 
 static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
@@ -460,8 +428,6 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
     drawText(renderer, 64, 555, g_status, GREEN, 1);
     drawText(renderer, 64, 575, "IP PS4:", TEXT, 1);
     drawText(renderer, 160, 575, g_localIp, MUTED, 1);
-    drawText(renderer, 64, 600, "ПРОШИВКА:", TEXT, 1);
-    drawText(renderer, 160, 600, g_firmwareVersion, MUTED, 1);
     drawText(renderer, 64, 625, controllerConnected() ? "ДЖОЙСТИК: ПОДКЛЮЧЁН" : "ДЖОЙСТИК: НЕ НАЙДЕН", controllerConnected() ? GREEN : MUTED, 1);
     drawText(renderer, 64, 650, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
     drawText(renderer, 64, 685, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
@@ -718,7 +684,6 @@ int main(int argc, char* argv[])
     openInputDevices();
 
     loadOrCreateReceiverId();
-    detectFirmwareVersion();
     refreshLocalIp();
     openDiscoverySocket();
     if (g_socket < 0)
