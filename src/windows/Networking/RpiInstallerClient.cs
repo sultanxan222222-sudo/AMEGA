@@ -46,10 +46,11 @@ internal sealed class RpiInstallerClient : IDisposable
 
         // is_exists is deliberately a read-only probe. A 'fail' response can
         // still prove the API is alive when the harmless test title is absent.
+        string probeDetail = FormatError(reply.Body);
         return new RpiProbeResult(true,
             status.Equals("success", StringComparison.OrdinalIgnoreCase)
                 ? "RPI отвечает на проверочный API-запрос."
-                : $"RPI отвечает (API status: {status}).");
+                : $"RPI отвечает (API status: {status}). {probeDetail}");
     }
 
     public async Task<RpiInstallResult> InstallAsync(
@@ -142,21 +143,15 @@ internal sealed class RpiInstallerClient : IDisposable
 
     private static bool TryReadStatus(string body, out string status)
     {
-        status = string.Empty;
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 8 });
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("status", out JsonElement value) ||
-                value.ValueKind != JsonValueKind.String)
-                return false;
-            status = value.GetString() ?? string.Empty;
-            return status.Length > 0 && status.Length <= 32;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
+        // RPI versions sometimes emit hexadecimal error_code values without
+        // JSON quoting (0x........), which makes the whole document invalid JSON.
+        // We only extract the small, fixed "status" string and never deserialize
+        // the malformed response as an object.
+        Match match = Regex.Match(body,
+            "\"status\"\\s*:\\s*\"(?<value>[a-zA-Z_]+)\"",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        status = match.Success ? match.Groups["value"].Value : string.Empty;
+        return match.Success && status.Length <= 32;
     }
 
     private static bool IsPrivateIPv4(IPAddress address)
