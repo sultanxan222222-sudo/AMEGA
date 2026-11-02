@@ -9,6 +9,10 @@ internal sealed class MainForm : Form
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
     private readonly Button _sendButton = new();
+    private readonly Button _rpiCheckButton = new();
+    private readonly Button _rpiInstallButton = new();
+    private readonly Label _rpiStatusLabel = new();
+    private readonly RpiInstallerClient _rpiClient = new();
     private readonly Label _fileLabel = new();
     private readonly Label _sizeLabel = new();
     private readonly Label _hashLabel = new();
@@ -28,13 +32,18 @@ internal sealed class MainForm : Form
     private bool _offerSent;
     private bool _refreshingDevices;
     private bool _isSearching;
+    private DiscoveredReceiver? _lastSelectedReceiver;
+    private string? _rpiReadyReceiverId;
+    private string? _rpiReadyIp;
+    private bool _rpiBusy;
+    private bool _rpiInstallActive;
 
     public MainForm()
     {
         Text = "AMEGA — отправка на PS4";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(740, 600);
-        Size = new Size(820, 650);
+        MinimumSize = new Size(760, 700);
+        Size = new Size(820, 730);
         BackColor = Color.FromArgb(24, 27, 33);
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10F);
@@ -82,18 +91,25 @@ internal sealed class MainForm : Form
         _devicesList.BorderStyle = BorderStyle.FixedSingle;
         _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
 
-        _stageLabel.SetBounds(32, 465, 740, 42);
+        ConfigureButton(_rpiCheckButton, "Проверить RPI", 32, 465, 180);
+        ConfigureButton(_rpiInstallButton, "Установить через RPI", 225, 465, 220);
+        _rpiStatusLabel.SetBounds(462, 465, 310, 48);
+        _rpiStatusLabel.Text = "RPI: не проверен. Нужен отдельный Standalone RPI на PS4.";
+        _rpiStatusLabel.ForeColor = Color.LightSteelBlue;
+        _rpiStatusLabel.AutoEllipsis = true;
+
+        _stageLabel.SetBounds(32, 530, 740, 36);
         _stageLabel.Text = "Поиск PS4 можно запускать независимо от выбора и проверки PKG.";
         _stageLabel.ForeColor = Color.FromArgb(245, 190, 55);
 
-        _statusLabel.SetBounds(32, 518, 740, 48);
+        _statusLabel.SetBounds(32, 575, 740, 62);
         _statusLabel.Text = "Готово. Сначала можешь найти PS4 или выбрать PKG.";
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
             title, subtitle, _chooseButton, _startButton, _stopButton, _sendButton,
             _fileLabel, _sizeLabel, _hashLabel, _hashProgress, _devicesTitle, _devicesList,
-            _stageLabel, _statusLabel
+            _rpiCheckButton, _rpiInstallButton, _rpiStatusLabel, _stageLabel, _statusLabel
         ]);
 
         _sender.ReceiverDiscovered += ReceiverWasDiscovered;
@@ -101,6 +117,8 @@ internal sealed class MainForm : Form
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
         _sendButton.Click += SendClicked;
+        _rpiCheckButton.Click += CheckRpiClicked;
+        _rpiInstallButton.Click += InstallViaRpiClicked;
         _devicesList.SelectedIndexChanged += DeviceSelectionChanged;
         _stopButton.Click += StopClicked;
         FormClosing += FormIsClosing;
@@ -137,6 +155,20 @@ internal sealed class MainForm : Form
             _hashCts is null && !string.IsNullOrWhiteSpace(_selectedFile) &&
             !string.IsNullOrWhiteSpace(_selectedHash) && GetSelectedReceiver() is not null;
         StyleButton(_sendButton, _sendButton.Enabled,
+            Color.FromArgb(99, 205, 145), Color.FromArgb(26, 29, 35));
+
+        DiscoveredReceiver? rpiTarget = GetRpiTarget();
+        bool rpiTargetReady = rpiTarget is not null &&
+            string.Equals(rpiTarget.ReceiverId, _rpiReadyReceiverId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(rpiTarget.IpAddress, _rpiReadyIp, StringComparison.OrdinalIgnoreCase);
+        _rpiCheckButton.Enabled = _isSearching && !_rpiBusy && !_rpiInstallActive && rpiTarget is not null;
+        _rpiInstallButton.Text = _rpiInstallActive ? "Снять доступ RPI" : "Установить через RPI";
+        _rpiInstallButton.Enabled = _isSearching && !_rpiBusy &&
+            (_rpiInstallActive || (rpiTargetReady && _hashCts is null &&
+            !string.IsNullOrWhiteSpace(_selectedFile) && !string.IsNullOrWhiteSpace(_selectedHash)));
+        StyleButton(_rpiCheckButton, _rpiCheckButton.Enabled,
+            Color.FromArgb(65, 105, 140), Color.White);
+        StyleButton(_rpiInstallButton, _rpiInstallButton.Enabled,
             Color.FromArgb(99, 205, 145), Color.FromArgb(26, 29, 35));
     }
 
@@ -272,6 +304,10 @@ internal sealed class MainForm : Form
         {
             _isSearching = true;
             _devices.Clear();
+            _lastSelectedReceiver = null;
+            _rpiReadyReceiverId = null;
+            _rpiReadyIp = null;
+            _rpiStatusLabel.Text = "RPI: выбери приставку и проверь Standalone RPI.";
             _devicesList.Items.Clear();
             _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
             _statusLabel.Text = "Запускаю обнаружение. Выбор PKG и SHA-256 не блокируют поиск.";
@@ -330,6 +366,7 @@ internal sealed class MainForm : Form
         if (_refreshingDevices) return;
         var selected = GetSelectedReceiver();
         string? newId = selected?.ReceiverId;
+        if (selected is not null) _lastSelectedReceiver = selected;
         if (_offerSent && !string.Equals(newId, _offeredReceiverId, StringComparison.OrdinalIgnoreCase))
         {
             _sender.UpdateOffer(null, null);
@@ -365,6 +402,7 @@ internal sealed class MainForm : Form
             if (selectedIndex < 0) selectedIndex = 0;
             _devicesList.SelectedIndex = selectedIndex;
             _selectedReceiverId = ordered[selectedIndex].ReceiverId;
+            _lastSelectedReceiver = ordered[selectedIndex];
         }
 
         _devicesList.EndUpdate();
@@ -378,6 +416,158 @@ internal sealed class MainForm : Form
             _statusLabel.Text = "Целевая приставка больше не найдена. Выбери устройство и отправь PKG заново.";
         }
         UpdateActionButtons();
+    }
+
+    private DiscoveredReceiver? GetRpiTarget() => GetSelectedReceiver() ?? _lastSelectedReceiver;
+
+    private async void CheckRpiClicked(object? sender, EventArgs e)
+    {
+        DiscoveredReceiver? target = GetRpiTarget();
+        if (!_isSearching || target is null) return;
+
+        _rpiBusy = true;
+        _rpiStatusLabel.Text = "RPI: проверяю API на PS4...";
+        UpdateActionButtons();
+        try
+        {
+            RpiProbeResult result = await _rpiClient.ProbeAsync(target.IpAddress, CancellationToken.None);
+            if (result.IsResponsive)
+            {
+                _rpiReadyReceiverId = target.ReceiverId;
+                _rpiReadyIp = target.IpAddress;
+                _rpiStatusLabel.Text = $"RPI: готов. {result.Message}";
+            }
+            else
+            {
+                _rpiReadyReceiverId = null;
+                _rpiReadyIp = null;
+                _rpiStatusLabel.Text = $"RPI: не готов. {result.Message}";
+                _statusLabel.Text =
+                    "Открой на PS4 отдельную программу Remote Package Installer (Standalone RPI) и повтори проверку.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _rpiReadyReceiverId = null;
+            _rpiReadyIp = null;
+            _rpiStatusLabel.Text = $"RPI: ошибка проверки — {ex.Message}";
+        }
+        finally
+        {
+            _rpiBusy = false;
+            UpdateActionButtons();
+        }
+    }
+
+    private async void InstallViaRpiClicked(object? sender, EventArgs e)
+    {
+        if (_rpiInstallActive)
+        {
+            var releaseChoice = MessageBox.Show(this,
+                "Снимать доступ можно только после того, как RPI закончил скачивать PKG. " +
+                "Это не отменяет уже созданную задачу установки. Продолжить?",
+                "Завершение сетевой раздачи RPI",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (releaseChoice == DialogResult.Yes)
+            {
+                _sender.RevokeRpiFileAccess();
+                _rpiInstallActive = false;
+                _rpiStatusLabel.Text = "RPI: временный доступ к PKG закрыт.";
+                UpdateActionButtons();
+            }
+            return;
+        }
+
+        DiscoveredReceiver? target = GetRpiTarget();
+        string? path = _selectedFile;
+        string? selectedHash = _selectedHash;
+        if (!_isSearching || target is null ||
+            !string.Equals(target.ReceiverId, _rpiReadyReceiverId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(target.IpAddress, _rpiReadyIp, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(selectedHash))
+        {
+            _rpiStatusLabel.Text = "Сначала выбери PS4, проверь RPI и выбери проверенный PKG.";
+            UpdateActionButtons();
+            return;
+        }
+
+        var confirmation = MessageBox.Show(this,
+            $"Передать на установку файл:\n{Path.GetFileName(path)}\n\n" +
+            $"Приставка: {target.DisplayName} ({target.IpAddress})\n\n" +
+            "Установка начнётся только после этого подтверждения. На PS4 должна быть открыта " +
+            "программа Standalone Remote Package Installer. Не закрывай AMEGA на ПК, пока RPI скачивает PKG.\n\n" +
+            "RPI вернёт номер задачи, но это ещё не подтверждение завершённой установки. Продолжить?",
+            "Подтверждение установки PKG",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes) return;
+
+        _rpiBusy = true;
+        _rpiStatusLabel.Text = "Проверяю подпись и SHA-256 выбранного PKG...";
+        _hashProgress.Visible = true;
+        _hashProgress.Value = 0;
+        UpdateActionButtons();
+
+        try
+        {
+            if (!await HasPkgSignatureAsync(path))
+            {
+                _rpiStatusLabel.Text = "Отказ: нет стандартной сигнатуры PS4 PKG (7F 43 4E 54).";
+                return;
+            }
+
+            var progress = new Progress<int>(value =>
+            {
+                _hashProgress.Value = Math.Clamp(value, 0, 100);
+                _hashLabel.Text = $"SHA-256 перед установкой: {value}%";
+            });
+            var digest = await CalculateSha256Async(path, new FileInfo(path).Length, progress, CancellationToken.None);
+            string actualHash = Convert.ToHexString(digest).ToLowerInvariant();
+            if (!string.Equals(actualHash, selectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                _selectedHash = null;
+                _sender.UpdateOffer(null, null);
+                _rpiReadyReceiverId = null;
+                _rpiReadyIp = null;
+                _rpiStatusLabel.Text = "PKG изменился после выбора. Выбери файл заново и повтори проверку.";
+                return;
+            }
+
+            string packageUrl = _sender.EnableRpiFileAccess(target.IpAddress, path, actualHash);
+            RpiInstallResult result = await _rpiClient.InstallAsync(
+                target.IpAddress, packageUrl, CancellationToken.None);
+            if (!result.Success || result.TaskId is null)
+            {
+                _sender.RevokeRpiFileAccess();
+                _rpiStatusLabel.Text = $"RPI: {result.Message}";
+                return;
+            }
+
+            _rpiInstallActive = true;
+            _rpiStatusLabel.Text = $"RPI принял задачу №{result.TaskId}. Ожидается скачивание PKG.";
+            _statusLabel.Text =
+                "Задача передана RPI. Проверь её ход на PS4; AMEGA не заявляет об окончании установки. Оригинал на ПК сохранён.";
+        }
+        catch (Exception ex)
+        {
+            _sender.RevokeRpiFileAccess();
+            _rpiStatusLabel.Text = $"Не удалось запустить установку: {ex.Message}";
+        }
+        finally
+        {
+            _hashProgress.Visible = false;
+            _rpiBusy = false;
+            UpdateActionButtons();
+        }
+    }
+
+    private static async Task<bool> HasPkgSignatureAsync(string path)
+    {
+        byte[] signature = new byte[4];
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        int read = await stream.ReadAsync(signature.AsMemory(0, signature.Length));
+        return read == 4 && signature[0] == 0x7f &&
+            signature[1] == (byte)'C' && signature[2] == (byte)'N' && signature[3] == (byte)'T';
     }
 
     private void SendClicked(object? sender, EventArgs e)
@@ -409,6 +599,17 @@ internal sealed class MainForm : Form
 
     private async void StopClicked(object? sender, EventArgs e)
     {
+        if (_rpiInstallActive)
+        {
+            var choice = MessageBox.Show(this,
+                "Остановка AMEGA закроет сетевой источник PKG. Если RPI ещё скачивает файл, установка прервётся. Остановить?",
+                "RPI ещё может скачивать PKG",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (choice != DialogResult.Yes) return;
+            _sender.RevokeRpiFileAccess();
+            _rpiInstallActive = false;
+            _rpiStatusLabel.Text = "RPI: раздача остановлена пользователем.";
+        }
         bool wasHashing = _hashCts is not null;
         if (_offerSent)
             _sender.UpdateOffer(null, null);
@@ -426,9 +627,24 @@ internal sealed class MainForm : Form
 
     private async void FormIsClosing(object? sender, FormClosingEventArgs e)
     {
+        if (_rpiInstallActive)
+        {
+            var choice = MessageBox.Show(this,
+                "RPI может ещё скачивать PKG. Закрытие AMEGA остановит источник файла и прервёт эту загрузку. Всё равно закрыть?",
+                "Закрытие AMEGA",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (choice != DialogResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+            _sender.RevokeRpiFileAccess();
+            _rpiInstallActive = false;
+        }
         _hashCts?.Cancel();
         await StopSenderAsync();
         await _sender.DisposeAsync();
+        _rpiClient.Dispose();
     }
 
     private async Task StopSenderAsync()
