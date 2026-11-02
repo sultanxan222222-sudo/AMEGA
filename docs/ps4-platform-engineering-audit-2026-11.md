@@ -278,3 +278,55 @@ For AMEGA this strengthens the recommended path:
 - Original RPI API reference: https://github.com/flatz/ps4_remote_pkg_installer
 - PS4 PKG header layout: https://www.psdevwiki.com/ps4/PKG_files
 
+
+
+## 10. Complete firmware-range picture and late-2026 correction
+
+Exploit capability and HEN availability must be recorded separately. The current ConsoleMods exploit chart (last edited 2026-10-31) groups the public landscape as follows:
+
+| Firmware family | Public status summary |
+|---|---|
+| Below 4.50 | Historical exploits; limited homebrew |
+| 4.50–5.05/5.07 | Older stable homebrew path |
+| 5.50–6.51 | Exploit path exists but chart describes it as unstable |
+| 6.70–6.72 | Mature/optimized path |
+| 7.00–7.55 and 8.00–8.52 | Several WebKit / kernel-exploit families |
+| 9.00 | Multiple established routes |
+| 9.03–9.51 and 9.60 | Public browser / kernel paths |
+| 10.00–11.00 | Public paths; 11.00 is the last PPPwn firmware |
+| 11.02 | Separate kernel-exploit family |
+| 11.50–12.02 | Newer WebKit / BD-JB paths; payload support differs |
+| 12.50–13.00 | Exploit availability exists, but kernel/HEN compatibility is more limited and varies by exact point release |
+| 13.02 / 13.04 | Public browser chain; SiSTRo GoldHEN v2.4b18.12 beta explicitly adds both |
+| 13.50 | Public browser chain; same SiSTRo beta explicitly adds 13.50 |
+| 13.52 | Independent hardware report documents GoldHEN v2.4b18.11 on 2026-09-21 |
+| 14.00 | BD-JB is described as unstable; no GoldHEN support is established in the current getting-started guide |
+| Above 14.00 | No public userland + kernel path established by the chart reviewed |
+
+GoldHEN version distinctions:
+- Upstream GoldHEN v2.4b18 is a prerelease whose own README lists 5.05, 6.71/6.72, 9.00, 9.60, 10.00/10.01, 10.50, 10.70/10.71 and 11.00.
+- SiSTRo's separate v2.4b18.12 beta notice explicitly adds 13.02, 13.04 and 13.50.
+- The caziques/PS4 community test repository documents GoldHEN v2.4b18.11 for 13.52 and labels its test as hardware-verified. This is a distinct build and must not be silently substituted for the 13.02/13.04/13.50 beta.
+- Scene-Collective ps4-hen source has development commits for 13.52 and 14.00, but its README's stated release range is narrower. A source commit or MAX_FW constant is not equivalent to a stable end-user payload.
+
+**AMEGA policy:** no static firmware-to-feature promise. Read the firmware only as diagnostics where the API is verified; detect HEN/installer services with real application-level probes; keep native discovery and future transfer independent of those optional services.
+
+### Runtime firmware API research
+
+The current OpenOrbis public `libkernel.h` declares `sceKernelGetSystemSwVersion` and the matching `OrbisKernelSwVersion` structure. However, the OpenOrbis Docker image used by the AMEGA CI build did not expose that type consistently, so the call has deliberately been left out of the current receiver build. It remains a candidate for a later compatibility adapter after a reproducible SDK/toolchain version is pinned and checked. The current app displays the detected local IPv4 address instead.
+
+### Controller update in AMEGA 0.2.2
+
+The receiver now initializes SDL GameController as well as SDL Joystick, prefers standardized Cross/Circle/D-pad events, retains raw Joystick fallback, and reacts to controller add/remove events. The UI displays connected/not-found status. CI compilation has passed for this controller change; USB and Bluetooth DS4 behavior still requires physical-console validation.
+
+### Current source references
+
+- ConsoleMods exploit chart, last edited 2026-10-31: https://consolemods.org/wiki/PS4:Exploit_Chart
+- ConsoleMods getting started: https://consolemods.org/wiki/Ps4_getting_started
+- GoldHEN upstream README / features and warning: https://github.com/GoldHEN/GoldHEN
+- GoldHEN upstream v2.4b18 release: https://github.com/GoldHEN/GoldHEN/releases/tag/2.4b18
+- SiSTRo v2.4b18.12 beta note: https://ko-fi.com/s/85ea22bd2f
+- 13.52 community hardware test: https://github.com/caziques/PS4
+- OpenOrbis libkernel header: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h
+- OpenOrbis kernel types: https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h
+
