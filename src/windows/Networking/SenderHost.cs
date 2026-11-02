@@ -660,9 +660,7 @@ internal sealed class SenderHost : IAsyncDisposable
             _rpiSha256 = null;
             _rpiReceiverIp = null;
             _rpiFileExpiresAt = default;
-            _rpiFileSize = 0;
-            _rpiCoveredBytes = 0;
-            _rpiServedRanges.Clear();
+            _rpiRangeCoverage = null;
         }
 
         if (_cancellation is not null)
