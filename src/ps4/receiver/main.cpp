@@ -38,7 +38,9 @@ static char g_receiverId[40] = {};
 static char g_nonce[40] = {};
 static char g_lastSenderNonce[160] = {};
 static char g_status[128] = "ПОИСК КОМПЬЮТЕРА В СЕТИ";
+static char g_localIp[48] = "IP-UNKNOWN";
 static Uint32 g_lastBeacon = 0;
+static Uint32 g_nextSocketRetry = 0;
 static SDL_Joystick* g_controller = nullptr;
 
 static bool randomBytes(unsigned char* out, size_t size)
@@ -137,7 +139,7 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "{\"protocol\":\"amega\",\"major\":1,"
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
-        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.0\","
+        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
         "\"reply_to_nonce\":\"%s\"}",
         g_receiverId, g_nonce, g_lastSenderNonce);
 
@@ -224,10 +226,16 @@ static void updateSender(const char* json, const sockaddr_in& from)
     snprintf(g_status, sizeof(g_status), "НАЙДЕН КОМПЬЮТЕР: %s", name);
 }
 
+static void openDiscoverySocket();
+
 static void pollNetwork()
 {
     const Uint32 now = SDL_GetTicks();
-    if (now - g_lastBeacon >= 3000) {
+    if (g_socket < 0 && now >= g_nextSocketRetry) {
+        openDiscoverySocket();
+        g_nextSocketRetry = now + 3000;
+    }
+    if (g_socket >= 0 && now - g_lastBeacon >= 3000) {
         sendAnnouncement(nullptr);
         g_lastBeacon = now;
     }
@@ -257,36 +265,103 @@ static void pollNetwork()
     }
 }
 
+static void writeStartupLog(const char* message);
+
+static void refreshLocalIp()
+{
+    snprintf(g_localIp, sizeof(g_localIp), "IP-UNKNOWN");
+    struct ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) {
+        char message[160];
+        snprintf(message, sizeof(message), "getifaddrs failed errno=%d (%s)", errno, strerror(errno));
+        writeStartupLog(message);
+        return;
+    }
+
+    bool found = false;
+    for (struct ifaddrs* item = interfaces; item; item = item->ifa_next) {
+        if (!item->ifa_addr || item->ifa_addr->sa_family != AF_INET ||
+            !(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK))
+            continue;
+
+        const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+        const unsigned long host = ntohl(address->sin_addr.s_addr);
+        if ((host & 0xffff0000UL) == 0xa9fe0000UL) continue; // Ignore link-local 169.254/16.
+        if (inet_ntop(AF_INET, &address->sin_addr, g_localIp, sizeof(g_localIp))) {
+            found = true;
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+
+    if (found) {
+        char message[160];
+        snprintf(message, sizeof(message), "PS4 IPv4 address: %s", g_localIp);
+        writeStartupLog(message);
+    } else {
+        writeStartupLog("No active non-loopback IPv4 address found");
+    }
+}
+
+static void setNetworkError(const char* stage, int errorCode)
+{
+    char message[220];
+    snprintf(message, sizeof(message), "UDP %s failed errno=%d (%s)",
+        stage, errorCode, strerror(errorCode));
+    writeStartupLog(message);
+    snprintf(g_status, sizeof(g_status), "ОШИБКА %s: %d", stage, errorCode);
+}
+
 static void openDiscoverySocket()
 {
+    refreshLocalIp();
+
     g_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_socket < 0) {
-        snprintf(g_status, sizeof(g_status), "ОШИБКА СЕТИ: %d", errno);
+        const int errorCode = errno;
+        setNetworkError("SOCKET", errorCode);
         return;
     }
 
     int yes = 1;
     if (setsockopt(g_socket, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes)) != 0) {
-        snprintf(g_status, sizeof(g_status), "ОШИБКА BROADCAST: %d", errno);
+        const int errorCode = errno;
+        setNetworkError("BROADCAST", errorCode);
         close(g_socket);
         g_socket = -1;
         return;
     }
-    setsockopt(g_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (setsockopt(g_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) != 0) {
+        const int errorCode = errno;
+        setNetworkError("REUSEADDR", errorCode);
+        close(g_socket);
+        g_socket = -1;
+        return;
+    }
 
     sockaddr_in local = {};
     local.sin_family = AF_INET;
     local.sin_addr.s_addr = htonl(INADDR_ANY);
     local.sin_port = htons(SENDER_DISCOVERY_PORT);
     if (bind(g_socket, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
-        snprintf(g_status, sizeof(g_status), "ОШИБКА ПОРТА: %d", errno);
+        const int errorCode = errno;
+        setNetworkError("BIND-38470", errorCode);
         close(g_socket);
         g_socket = -1;
         return;
     }
 
     const int flags = fcntl(g_socket, F_GETFL, 0);
-    if (flags >= 0) fcntl(g_socket, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0 || fcntl(g_socket, F_SETFL, flags | O_NONBLOCK) != 0) {
+        const int errorCode = errno;
+        setNetworkError("NONBLOCK", errorCode);
+        close(g_socket);
+        g_socket = -1;
+        return;
+    }
+
+    snprintf(g_status, sizeof(g_status), "UDP 38470 ГОТОВ");
+    writeStartupLog("UDP discovery socket bound to 0.0.0.0:38470; nonblocking mode ready");
 }
 
 static uint32_t nextCodepoint(const char*& p)
@@ -394,6 +469,9 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
 
     fill(renderer, 60, 520, 1160, 2, PANEL2);
     drawText(renderer, 64, 555, g_status, GREEN, 1);
+    char ipLine[72];
+    snprintf(ipLine, sizeof(ipLine), "IP PS4: %s", g_localIp);
+    drawText(renderer, 64, 588, ipLine, MUTED, 1);
     drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
     drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
     SDL_RenderPresent(renderer);
@@ -493,7 +571,7 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.1 startup");
+    writeStartupLog("AMEGA 0.2.2 startup");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         char message[256];

@@ -210,7 +210,7 @@ internal sealed class MainForm : Form
             await _sender.StartAsync(_selectedFile, _selectedHash);
             _deviceExpiryTimer.Start();
             _stopButton.Enabled = true;
-            _statusLabel.Text = $"ПК отправляет запросы на UDP {SenderHost.SenderDiscoveryPort} и ждёт ответы на UDP {SenderHost.ReceiverDiscoveryPort}.";
+            _statusLabel.Text = $"Поиск активен: отправка UDP {SenderHost.SenderDiscoveryPort}, приём UDP {SenderHost.ReceiverDiscoveryPort}. Если PS4 не появляется, запусти Allow-AMEGA-Firewall.ps1 рядом с AMEGA.exe.";
             _stageLabel.Text = $"Сеть: {_sender.NetworkSummary}. Directed broadcast и резервный поиск по адресам подсети активны.";
         }
         catch (Exception ex)

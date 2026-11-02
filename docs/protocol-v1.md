@@ -4,7 +4,7 @@ Status: design baseline. Implementations must validate every field and reject un
 
 ## 1. Transport
 
-- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472. The distinct ports avoid competing wildcard binds.
+- Discovery: UDP IPv4 per-interface directed broadcast plus bounded unicast subnet probes. PC-to-PS4 announcements use UDP 38470; PS4-to-PC replies use UDP 38472. The distinct ports avoid competing wildcard binds. On Windows, the AMEGA executable must be permitted to receive inbound UDP 38472 on a trusted Private profile; the future local HTTP host uses TCP 38471.
 - Control and data: HTTP over the local network in the first development milestone.
 - Production hardening: authenticated HTTPS or an authenticated encrypted session established during pairing. Plain HTTP must not be treated as secure on untrusted networks.
 - All messages are UTF-8 JSON unless the endpoint explicitly serves binary file data.
@@ -13,6 +13,8 @@ Status: design baseline. Implementations must validate every field and reject un
 Initial development defaults: UDP 38470 and HTTP 38471. These are configurable implementation defaults, not protocol constants.
 
 ## 2. Bidirectional discovery
+
+The PS4 receiver retries UDP discovery socket initialization every three seconds after a startup failure and exposes its current IPv4 address independently from socket status. The Windows build includes a narrowly scoped firewall helper for UDP 38472 and TCP 38471; it must not enable these rules on Public profiles.
 
 Discovery is a challenge/reply exchange:
 
