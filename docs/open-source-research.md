@@ -62,3 +62,30 @@ The public project demonstrates practical discovery lessons:
 AMEGA adopts these architectural lessons in an independent protocol implementation: per-adapter directed broadcasts, a bounded unicast UDP sweep, and a nonce-correlated PS4 reply on a separate port. AMEGA does not copy LoopDPI source code or use its receiver protocol. Its PS4/PS5 service ports and APIs are a different compatibility target.
 
 The original flatz Remote Package Installer documentation confirms that RPI is a separate service on TCP 12800 and that installation is an HTTP POST carrying a package URL. AMEGA discovery does not infer that RPI is installed merely because a PS4 responds to AMEGA UDP; RPI/GoldHEN installation capability remains a separate integration stage.
+
+
+## Updated remote-install research (2026-11-02)
+
+The current `KonixDev/ps4-pkg-installer` README contains important implementation details beyond the initial API overview:
+
+- It verifies PS4 packages by their package signature before queueing them, rather than trusting the filename extension.
+- Its RPI readiness check calls the actual `POST /api/is_exists` endpoint. A TCP handshake alone can falsely report ready if the RPI's single-threaded event loop has become stuck.
+- It tracks installation by `task_id` and polls `/api/get_task_progress`, `/api/pause_task`, `/api/resume_task`, and `/api/stop_task`.
+- The RPI can temporarily stop answering progress polls while it is doing a long download; the PC-side server's observed HTTP Range requests can provide an independent transfer-progress signal. Silence must not automatically be interpreted as a failed download.
+- It documents specific RPI failure codes, including insufficient free space and an existing install task. AMEGA should preserve real error codes instead of converting every failure to a generic message.
+
+The same research explains why HTTP Range handling is a protocol requirement: the PS4 package reader seeks metadata at non-zero offsets. The server must return the requested byte interval with `206 Partial Content`, a correct `Content-Range`, and `416 Range Not Satisfiable` for an invalid interval. A generic web server that returns the whole file with `200 OK` can make a valid package appear corrupted.
+
+## Additional installation approaches
+
+- **DirectPackageInstaller** is a separate homebrew approach that uses GoldHEN BinLoader rather than the standalone RPI application. ConsoleMods notes the distinction; GoldHEN itself marks BinLoader experimental and warns of possible crashes. AMEGA will not make this the default path.
+- **BGFT / AppInstUtil** native-install research remains exploratory. Headers and PoCs do not prove a safe retail-userland installation lifecycle. The flatz write-up records a case where a direct AppInstUtil call returned success but the installed title later failed due to filesystem block mapping. AMEGA must rely on a verified task/result state and a real hardware test before enabling any such adapter.
+- **OrbisShelf** is a newer project worth monitoring for its BGFT/AppInstUtil workflow, but its public description/build state is not a substitute for an AMEGA end-to-end test. It remains a research reference only.
+
+## Engineering decision
+
+For AMEGA, the least fragile path is:
+1. Build and test our own discovery + authenticated resumable transfer independently of installer services.
+2. Add an RPI adapter that checks the actual API and implements correct Range.
+3. Add GoldHEN / FTP / Package Installer as explicitly detected options.
+4. Treat BinLoader and direct native AppInstUtil as optional research-only paths until proven stable.
