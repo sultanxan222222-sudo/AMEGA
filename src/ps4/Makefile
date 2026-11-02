@@ -29,12 +29,15 @@ check-toolchain:
 build:
 	mkdir -p build
 
-build/amega.o: receiver/main.cpp receiver/font_ru.h receiver/sha256.h | build
+build/amega.o: receiver/main.cpp receiver/font_ru.h receiver/sha256.h receiver/downloader.h | build
 	$(CXX) $(CXXFLAGS) -c receiver/main.cpp -o $@
 
-build/amega.elf: build/amega.o
+build/downloader.o: receiver/downloader.cpp receiver/downloader.h receiver/sha256.h | build
+	$(CXX) $(CXXFLAGS) -c receiver/downloader.cpp -o $@
+
+build/amega.elf: build/amega.o build/downloader.o
 	$(LD) -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr \
-	  -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o $< -o $@
+	  -L$(TOOLCHAIN)/lib $(LIBS) $(TOOLCHAIN)/lib/crt1.o $^ -o $@
 
 eboot.bin: build/amega.elf
 	$(CREATE_EBOOT) -in=build/amega.elf -out=build/amega.oelf --paid=0x3800000000000011
