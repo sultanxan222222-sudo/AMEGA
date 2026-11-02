@@ -164,7 +164,7 @@ static void sendAnnouncement(const sockaddr_in* unicastTarget = nullptr)
         "{\"protocol\":\"amega\",\"major\":1,"
         "\"type\":\"receiver_announcement\","
         "\"receiver_id\":\"%s\",\"instance_nonce\":\"%s\","
-        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.0\","
+        "\"display_name\":\"PS4 PRO\",\"receiver_version\":\"0.2.2\","
         "\"reply_to_nonce\":\"%s\"}",
         g_receiverId, g_nonce, g_lastSenderNonce);
 
