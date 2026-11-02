@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "src/windows/**"
+      - "tests/range-coverage/**"
       - ".github/workflows/windows-build.yml"
   pull_request:
     paths:
       - "src/windows/**"
+      - "tests/range-coverage/**"
       - ".github/workflows/windows-build.yml"
   workflow_dispatch:
 
@@ -25,6 +27,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
+      - name: Test HTTP Range progress accounting
+        run: dotnet run --project tests/range-coverage/RangeCoverage.Tests.csproj -c Release
 
       - name: Publish self-contained Windows x64 app
         run: >
