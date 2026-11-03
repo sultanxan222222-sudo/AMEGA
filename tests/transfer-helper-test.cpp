@@ -22,7 +22,7 @@ int main() {
         "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592") && ok;
     if (!ok) return 1;
 
-    if (amega_transfer::safeFileName("../bad/name.pkg") != "__bad_name.pkg") {
+    if (amega_transfer::safeFileName("../bad/name.pkg") != "___bad_name.pkg") {
         fprintf(stderr, "Filename sanitization test failed\n");
         return 2;
     }
