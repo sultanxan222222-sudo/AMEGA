@@ -49,6 +49,7 @@ static bool g_acceptRequested = false;
 static bool g_downloading = false;
 static uint64_t g_downloadBytes = 0;
 static char g_savedFile[220] = {};
+static char g_completedTransferId[80] = {};
 
 static bool randomBytes(unsigned char* out, size_t size)
 {
@@ -246,7 +247,10 @@ static void pollOffer()
     std::string error;
     if (amega_transfer::fetchOffer(g_senders[g_selected].ip,
         g_senders[g_selected].httpPort, next, error)) {
-        if (next.ready) {
+        if (next.ready && next.transferId == g_completedTransferId) {
+            g_offer.ready = false;
+            snprintf(g_status, sizeof(g_status), "ЭТА ПЕРЕДАЧА УЖЕ ЗАВЕРШЕНА");
+        } else if (next.ready) {
             if (next.transferId != g_offer.transferId) g_downloadBytes = 0;
             g_offer = next;
             snprintf(g_status, sizeof(g_status), "ФАЙЛ ГОТОВ: НАЖМИТЕ X ДЛЯ ПРИЁМА");
@@ -729,6 +733,7 @@ int main(int argc, char* argv[])
             if (ok) {
                 snprintf(g_status, sizeof(g_status), "ГОТОВО: SHA-256 ПРОВЕРЕН");
                 snprintf(g_savedFile, sizeof(g_savedFile), "СОХРАНЕНО: %s", savedPath.c_str());
+                snprintf(g_completedTransferId, sizeof(g_completedTransferId), "%s", g_offer.transferId.c_str());
                 g_offer.ready = false;
                 writeStartupLog("Package received and SHA-256 verified");
             } else {
