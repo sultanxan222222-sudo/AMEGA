@@ -16,7 +16,7 @@ The 0.3.0 source now implements the first complete transfer path:
 - PS4 displays the offer, requires the user to press **X**, downloads into /data/AMEGA/Received, keeps a .part file after interruptions, and resumes from the existing byte count.
 - PS4 verifies the full file with SHA-256 before renaming it to its final filename. A failed digest is not presented as a completed package.
 
-Builds: [Windows x64 build](https://github.com/sultanxan222222-sudo/AMEGA/actions/runs/41712286265) · [PS4 OpenOrbis build and transfer-helper tests](https://github.com/sultanxan222222-sudo/AMEGA/actions/runs/41712741553).
+Builds: [Windows x64 build](https://github.com/sultanxan222222-sudo/AMEGA/actions/runs/41713040149) · [PS4 OpenOrbis build and transfer-helper tests](https://github.com/sultanxan222222-sudo/AMEGA/actions/runs/41713046772).
 
 **Important:** successful CI builds prove that the Windows app and PS4 PKG compile; they do not prove a real transfer on the user's PS4 Pro. The build still needs a hardware test with the target GoldHEN/firmware combination before it can be called a finished release. The current transfer uses plain HTTP on a trusted home LAN and does not yet include encrypted pairing or automatic package installation.
 
