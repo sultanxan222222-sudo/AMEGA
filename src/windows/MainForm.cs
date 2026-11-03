@@ -8,6 +8,7 @@ internal sealed class MainForm : Form
     private readonly Button _chooseButton = new();
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
+    private readonly Button _sendButton = new();
     private readonly Label _fileLabel = new();
     private readonly Label _sizeLabel = new();
     private readonly Label _hashLabel = new();
@@ -22,6 +23,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _deviceExpiryTimer = new() { Interval = 3000 };
     private string? _selectedFile;
     private string? _selectedHash;
+    private bool _searchRunning;
 
     public MainForm()
     {
@@ -52,8 +54,10 @@ internal sealed class MainForm : Form
         ConfigureButton(_chooseButton, "Выбрать PKG", 30, 135, 170);
         ConfigureButton(_startButton, "Искать PS4", 215, 135, 170);
         ConfigureButton(_stopButton, "Остановить", 400, 135, 150);
+        ConfigureButton(_sendButton, "Отправить", 565, 135, 170);
         _startButton.Enabled = false;
         _stopButton.Enabled = false;
+        _sendButton.Enabled = false;
 
         _fileLabel.SetBounds(32, 205, 740, 28);
         _sizeLabel.SetBounds(32, 239, 740, 25);
@@ -86,7 +90,7 @@ internal sealed class MainForm : Form
         _statusLabel.ForeColor = Color.LightGreen;
 
         Controls.AddRange([
-            title, subtitle, _chooseButton, _startButton, _stopButton,
+            title, subtitle, _chooseButton, _startButton, _stopButton, _sendButton,
             _fileLabel, _sizeLabel, _hashLabel, _hashProgress, _devicesTitle, _devicesList,
             _stageLabel, _statusLabel
         ]);
@@ -96,6 +100,9 @@ internal sealed class MainForm : Form
         _chooseButton.Click += ChooseFileClicked;
         _startButton.Click += StartClicked;
         _stopButton.Click += StopClicked;
+        _sendButton.Click += SendClicked;
+        _devicesList.SelectedIndexChanged += (_, _) =>
+            _sendButton.Enabled = _searchRunning && _devicesList.SelectedIndex >= 0 && _devices.Count > 0;
         FormClosing += FormIsClosing;
     }
 
@@ -208,9 +215,10 @@ internal sealed class MainForm : Form
             _devicesList.Items.Add("Ищу приставки AMEGA в локальной сети…");
             _statusLabel.Text = "Запускаю двустороннее сетевое обнаружение…";
             await _sender.StartAsync(_selectedFile, _selectedHash);
+            _searchRunning = true;
             _deviceExpiryTimer.Start();
             _stopButton.Enabled = true;
-            _statusLabel.Text = $"Поиск активен: отправка UDP {SenderHost.SenderDiscoveryPort}, приём UDP {SenderHost.ReceiverDiscoveryPort}. Если PS4 не появляется, запусти Allow-AMEGA-Firewall.ps1 рядом с AMEGA.exe.";
+            _statusLabel.Text = $"Поиск активен: UDP {SenderHost.SenderDiscoveryPort}/{SenderHost.ReceiverDiscoveryPort}. Выбери найденную PS4 и нажми «Отправить».";
             _stageLabel.Text = $"Сеть: {_sender.NetworkSummary}. Directed broadcast и резервный поиск по адресам подсети активны.";
         }
         catch (Exception ex)
@@ -230,7 +238,7 @@ internal sealed class MainForm : Form
             {
                 _devices[receiver.ReceiverId] = receiver;
                 RefreshDeviceList();
-                _statusLabel.Text = $"Найдена приставка: {receiver.DisplayName} ({receiver.IpAddress}).";
+                _statusLabel.Text = $"Найдена приставка: {receiver.DisplayName} ({receiver.IpAddress}). Выбери её и нажми «Отправить»; на PS4 подтверди кнопкой X.";
             }));
         }
         catch (InvalidOperationException) { }
@@ -246,15 +254,48 @@ internal sealed class MainForm : Form
 
     private void RefreshDeviceList()
     {
+        var previous = _devicesList.SelectedItem as string;
         _devicesList.Items.Clear();
         if (_devices.Count == 0)
         {
             _devicesList.Items.Add("Пока приставки не найдены. Запусти AMEGA на PS4.");
+            _sendButton.Enabled = false;
             return;
         }
 
-        foreach (var device in _devices.Values.OrderBy(x => x.DisplayName))
+        var ordered = _devices.Values.OrderBy(x => x.DisplayName).ToArray();
+        foreach (var device in ordered)
             _devicesList.Items.Add(device.DisplayLabel);
+
+        int selected = previous is null ? -1 :
+            Array.FindIndex(ordered, device => device.DisplayLabel == previous);
+        if (selected < 0 && ordered.Length == 1) selected = 0;
+        if (selected >= 0) _devicesList.SelectedIndex = selected;
+        _sendButton.Enabled = _searchRunning && _devicesList.SelectedIndex >= 0;
+    }
+
+    private void SendClicked(object? sender, EventArgs e)
+    {
+        var ordered = _devices.Values.OrderBy(x => x.DisplayName).ToArray();
+        int index = _devicesList.SelectedIndex;
+        if (!_searchRunning || index < 0 || index >= ordered.Length)
+        {
+            _statusLabel.Text = "Сначала найди и выбери приставку PS4.";
+            return;
+        }
+
+        var receiver = ordered[index];
+        try
+        {
+            _sender.ArmTransfer(receiver.IpAddress);
+            _sendButton.Enabled = false;
+            _statusLabel.Text = $"Предложение отправлено на {receiver.DisplayName} ({receiver.IpAddress}). На PS4 нажми X для приёма файла.";
+            _stageLabel.Text = $"PKG доступен только выбранной приставке. HTTP Range включён для продолжения после обрыва.";
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"Не удалось отправить предложение: {ex.Message}";
+        }
     }
 
     private async void StopClicked(object? sender, EventArgs e)
@@ -278,9 +319,11 @@ internal sealed class MainForm : Form
     private async Task StopSenderAsync()
     {
         _deviceExpiryTimer.Stop();
+        _searchRunning = false;
         try { await _sender.StopAsync(); }
         catch (Exception ex) { _statusLabel.Text = $"Ошибка остановки: {ex.Message}"; }
         _stopButton.Enabled = false;
+        _sendButton.Enabled = false;
         _startButton.Enabled = _selectedFile is not null;
         _chooseButton.Enabled = true;
     }
