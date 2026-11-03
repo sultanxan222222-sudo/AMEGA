@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "font_ru.h"
+#include "transfer.h"
 
 static const int SENDER_DISCOVERY_PORT = 38470;
 static const int RECEIVER_DISCOVERY_PORT = 38472;
@@ -42,6 +43,12 @@ static char g_localIp[48] = "IP-UNKNOWN";
 static Uint32 g_lastBeacon = 0;
 static Uint32 g_nextSocketRetry = 0;
 static SDL_Joystick* g_controller = nullptr;
+static amega_transfer::Offer g_offer;
+static Uint32 g_lastOfferPoll = 0;
+static bool g_acceptRequested = false;
+static bool g_downloading = false;
+static uint64_t g_downloadBytes = 0;
+static char g_savedFile[220] = {};
 
 static bool randomBytes(unsigned char* out, size_t size)
 {
@@ -228,6 +235,30 @@ static void updateSender(const char* json, const sockaddr_in& from)
 
 static void openDiscoverySocket();
 
+static void pollOffer()
+{
+    if (g_selected < 0 || !g_senders[g_selected].used) return;
+    const Uint32 now = SDL_GetTicks();
+    if (now - g_lastOfferPoll < 3000) return;
+    g_lastOfferPoll = now;
+
+    amega_transfer::Offer next;
+    std::string error;
+    if (amega_transfer::fetchOffer(g_senders[g_selected].ip,
+        g_senders[g_selected].httpPort, next, error)) {
+        if (next.ready) {
+            if (next.transferId != g_offer.transferId) g_downloadBytes = 0;
+            g_offer = next;
+            snprintf(g_status, sizeof(g_status), "ФАЙЛ ГОТОВ: НАЖМИТЕ X ДЛЯ ПРИЁМА");
+        } else if (!g_downloading) {
+            g_offer.ready = false;
+            snprintf(g_status, sizeof(g_status), "ПК НАЙДЕН. ОЖИДАЮ КОМАНДУ ОТПРАВИТЬ");
+        }
+    } else if (!g_offer.ready && !g_downloading) {
+        snprintf(g_status, sizeof(g_status), "ПК НАЙДЕН, HTTP: ОЖИДАНИЕ");
+    }
+}
+
 static void pollNetwork()
 {
     const Uint32 now = SDL_GetTicks();
@@ -263,6 +294,7 @@ static void pollNetwork()
         for (int i = 0; i < MAX_SENDERS; ++i)
             if (g_senders[i].used) { g_selected = i; break; }
     }
+    pollOffer();
 }
 
 static void writeStartupLog(const char* message);
@@ -467,13 +499,29 @@ static void drawUi(SDL_Renderer* renderer, SDL_Window* window, bool surfaceRende
         }
     }
 
-    fill(renderer, 60, 520, 1160, 2, PANEL2);
-    drawText(renderer, 64, 555, g_status, GREEN, 1);
-    char ipLine[72];
-    snprintf(ipLine, sizeof(ipLine), "IP PS4: %s", g_localIp);
-    drawText(renderer, 64, 588, ipLine, MUTED, 1);
-    drawText(renderer, 64, 620, "X - ВЫБРАТЬ ПК     O - СБРОСИТЬ ВЫБОР", TEXT, 1);
-    drawText(renderer, 64, 660, "ПЕРЕДАЧА ФАЙЛОВ БУДЕТ ВКЛЮЧЕНА В СЛЕДУЮЩЕМ ЭТАПЕ", MUTED, 1);
+    fill(renderer, 60, 455, 1160, 2, PANEL2);
+    if (g_offer.ready) {
+        drawText(renderer, 64, 474, "ПРЕДЛОЖЕНИЕ ОТ ПК", GOLD, 1);
+        char fileLine[180];
+        snprintf(fileLine, sizeof(fileLine), "%s  |  %llu БАЙТ",
+            g_offer.fileName.c_str(), (unsigned long long)g_offer.fileSize);
+        drawText(renderer, 64, 496, fileLine, TEXT, 1);
+    } else {
+        drawText(renderer, 64, 482, "НА ПК ВЫБЕРИ ЭТУ PS4 И НАЖМИ «ОТПРАВИТЬ»", MUTED, 1);
+    }
+
+    fill(renderer, 60, 545, 1160, 2, PANEL2);
+    drawText(renderer, 64, 565, g_status, g_downloading ? GOLD : GREEN, 1);
+    if (g_downloading && g_offer.fileSize > 0) {
+        int barWidth = (int)(1080ULL * g_downloadBytes / g_offer.fileSize);
+        fill(renderer, 64, 592, 1080, 12, PANEL2);
+        fill(renderer, 64, 592, barWidth, 12, GREEN);
+    }
+    char ipLine[100];
+    snprintf(ipLine, sizeof(ipLine), "IP PS4: %s   |   ПАПКА: /data/AMEGA/Received", g_localIp);
+    drawText(renderer, 64, 620, ipLine, MUTED, 1);
+    if (g_savedFile[0]) drawText(renderer, 64, 646, g_savedFile, TEXT, 1);
+    drawText(renderer, 64, 680, "X - ПРИНЯТЬ ФАЙЛ     O - СБРОСИТЬ ВЫБОР ПК", TEXT, 1);
     SDL_RenderPresent(renderer);
     if (surfaceRenderer)
         SDL_UpdateWindowSurface(window);
@@ -513,12 +561,17 @@ static void handleController(SDL_Event& event)
         case 14: // D-pad down on button-based mappings
             moveSelection(1);
             break;
-        case 0: // Cross: select a discovered PC; transfer remains a separate future step.
-            if (g_selected >= 0 && g_senders[g_selected].used)
-                snprintf(g_status, sizeof(g_status), "ВЫБРАН ПК: %s", g_senders[g_selected].name);
+        case 0: // Cross accepts the offered package.
+            if (g_selected >= 0 && g_senders[g_selected].used && g_offer.ready && !g_downloading) {
+                g_acceptRequested = true;
+                snprintf(g_status, sizeof(g_status), "ПРИНИМАЮ ФАЙЛ...");
+            } else if (g_selected >= 0 && g_senders[g_selected].used) {
+                snprintf(g_status, sizeof(g_status), "СНАЧАЛА НАЖМИ «ОТПРАВИТЬ» НА ПК");
+            }
             break;
-        case 1: // Circle: clear the selection.
+        case 1: // Circle clears the selected PC.
             g_selected = -1;
+            g_offer.ready = false;
             snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
             break;
         default:
@@ -571,7 +624,7 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    writeStartupLog("AMEGA 0.2.2 startup");
+    writeStartupLog("AMEGA 0.3.0 transfer receiver startup");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) {
         char message[256];
@@ -658,6 +711,29 @@ int main(int argc, char* argv[])
                 break;
             }
             handleController(event);
+        }
+        if (g_acceptRequested && g_selected >= 0 && g_senders[g_selected].used && g_offer.ready) {
+            g_acceptRequested = false;
+            g_downloading = true;
+            g_downloadBytes = 0;
+            g_savedFile[0] = 0;
+            drawUi(renderer, window, surfaceRenderer);
+            std::string savedPath, error;
+            bool ok = amega_transfer::downloadFile(g_senders[g_selected].ip,
+                g_senders[g_selected].httpPort, g_offer,
+                [](uint64_t bytes) {
+                    g_downloadBytes = bytes;
+                }, savedPath, error);
+            g_downloading = false;
+            if (ok) {
+                snprintf(g_status, sizeof(g_status), "ГОТОВО: SHA-256 ПРОВЕРЕН");
+                snprintf(g_savedFile, sizeof(g_savedFile), "СОХРАНЕНО: %s", savedPath.c_str());
+                g_offer.ready = false;
+                writeStartupLog("Package received and SHA-256 verified");
+            } else {
+                snprintf(g_status, sizeof(g_status), "%s", error.c_str());
+                writeStartupLog(error.c_str());
+            }
         }
         drawUi(renderer, window, surfaceRenderer);
         SDL_Delay(33);
