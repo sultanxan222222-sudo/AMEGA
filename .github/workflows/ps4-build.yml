@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - "src/ps4/**"
+      - "tests/**"
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
       - ".github/workflows/ps4-build.yml"
   pull_request:
     paths:
       - "src/ps4/**"
+      - "tests/**"
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
       - ".github/workflows/ps4-build.yml"
@@ -24,6 +26,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Test transfer helpers and SHA-256
+        run: |
+          g++ -std=c++11 -O2 tests/transfer-helper-test.cpp -o /tmp/amega-transfer-test
+          /tmp/amega-transfer-test
 
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
