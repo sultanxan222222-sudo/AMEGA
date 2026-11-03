@@ -291,7 +291,11 @@ static void pollNetwork()
     for (int i = 0; i < MAX_SENDERS; ++i) {
         if (g_senders[i].used && now - g_senders[i].lastSeen > 12000) {
             g_senders[i].used = false;
-            if (g_selected == i) g_selected = -1;
+            if (g_selected == i) {
+                g_selected = -1;
+                g_offer.ready = false;
+                g_lastOfferPoll = 0;
+            }
         }
     }
     if (g_selected < 0) {
@@ -538,6 +542,10 @@ static void moveSelection(int direction)
     for (int n = 1; n <= MAX_SENDERS; ++n) {
         const int candidate = (g_selected + direction * n + MAX_SENDERS * 2) % MAX_SENDERS;
         if (g_senders[candidate].used) {
+            if (g_selected != candidate) {
+                g_offer.ready = false;
+                g_lastOfferPoll = 0;
+            }
             g_selected = candidate;
             return;
         }
@@ -576,6 +584,8 @@ static void handleController(SDL_Event& event)
         case 1: // Circle clears the selected PC.
             g_selected = -1;
             g_offer.ready = false;
+            g_completedTransferId[0] = 0;
+            g_lastOfferPoll = 0;
             snprintf(g_status, sizeof(g_status), "ВЫБОР СБРОШЕН");
             break;
         default:
