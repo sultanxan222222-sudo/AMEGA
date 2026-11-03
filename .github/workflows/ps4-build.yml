@@ -4,8 +4,10 @@ on:
   push:
     paths:
       - "src/ps4/**"
+      - "tests/**"
       - "tools/generate_icon.py"
       - "tools/create_gp4.py"
+      - "tests/**"
       - ".github/workflows/ps4-build.yml"
   pull_request:
     paths:
