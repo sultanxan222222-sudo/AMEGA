@@ -25,6 +25,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Test transfer helpers and SHA-256
+        run: |
+          g++ -std=c++11 -O2 tests/transfer-helper-test.cpp -o /tmp/amega-transfer-test
+          /tmp/amega-transfer-test
+
       - name: Generate package icon
         run: python3 tools/generate_icon.py src/ps4/sce_sys/icon0.png
 
