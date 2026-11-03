@@ -1,5 +1,5 @@
 APP_TITLE := AMEGA PS4 Receiver
-APP_VERSION := 0.2.2
+APP_VERSION := 0.3.0
 TITLE_ID := AMEG00001
 CONTENT_ID := IV0000-AMEG00001_00-AMEGARECEIVER000
 
@@ -29,7 +29,7 @@ check-toolchain:
 build:
 	mkdir -p build
 
-build/amega.o: receiver/main.cpp receiver/font_ru.h | build
+build/amega.o: receiver/main.cpp receiver/font_ru.h receiver/transfer.h | build
 	$(CXX) $(CXXFLAGS) -c receiver/main.cpp -o $@
 
 build/amega.elf: build/amega.o
