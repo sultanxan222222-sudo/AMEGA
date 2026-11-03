@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdint.h>
@@ -361,6 +362,7 @@ static inline bool downloadFile(const char* ip, int port, const Offer& offer,
             if ((uint64_t)amount > expectedBytes) amount = (size_t)expectedBytes;
             if (fwrite(initialBody.data(), 1, amount, output) != amount) writeOk = false;
             received += amount;
+            if (progress) progress(offset + received);
         }
         while (writeOk && received < expectedBytes) {
             ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
