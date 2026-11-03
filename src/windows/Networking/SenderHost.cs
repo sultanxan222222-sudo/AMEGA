@@ -29,6 +29,23 @@ internal sealed class SenderHost : IAsyncDisposable
     private Task? _beaconTask;
     private Task? _receiverListenTask;
     private IReadOnlyList<LanInterface> _lanInterfaces = Array.Empty<LanInterface>();
+    private volatile bool _transferArmed;
+    private string? _allowedReceiverAddress;
+
+    public void ArmTransfer(string receiverIp)
+    {
+        if (!IPAddress.TryParse(receiverIp, out var address) || address.AddressFamily != AddressFamily.InterNetwork)
+            throw new ArgumentException("Invalid PS4 IPv4 address.", nameof(receiverIp));
+        _allowedReceiverAddress = address.ToString();
+        _transferArmed = true;
+    }
+
+    private bool IsAuthorizedReceiver(HttpContext context)
+    {
+        var remote = context.Connection.RemoteIpAddress;
+        return _transferArmed && remote is not null && _allowedReceiverAddress is not null &&
+            string.Equals(remote.MapToIPv4().ToString(), _allowedReceiverAddress, StringComparison.Ordinal);
+    }
 
     public event Action<DiscoveredReceiver>? ReceiverDiscovered;
     public string NetworkSummary { get; private set; } = "сетевые адаптеры ещё не проверены";
@@ -48,6 +65,8 @@ internal sealed class SenderHost : IAsyncDisposable
             Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
             sha256, DateTimeOffset.UtcNow);
 
+        _transferArmed = false;
+        _allowedReceiverAddress = null;
         _lanInterfaces = GetLanInterfaces();
         NetworkSummary = _lanInterfaces.Count == 0
             ? "активный IPv4-адаптер не найден"
@@ -66,10 +85,29 @@ internal sealed class SenderHost : IAsyncDisposable
         {
             protocol = "amega",
             major = 1,
-            status = "discovery_only",
+            status = _transferArmed ? "ready" : "discovering",
             sender_id = _senderId
         }));
-        app.MapGet("/api/v1/offer", () => Results.Json(offer));
+        app.MapGet("/api/v1/offer", (HttpContext context) => Results.Json(new
+        {
+            protocol = "amega",
+            major = 1,
+            type = "transfer_offer",
+            transfer_id = offer.TransferId,
+            sender_id = offer.SenderId,
+            file_name = offer.FileName,
+            file_size = offer.FileSize,
+            file_kind = offer.FileKind,
+            sha256 = offer.Sha256,
+            status = IsAuthorizedReceiver(context) ? "ready" : "idle",
+            created_utc = offer.CreatedUtc
+        }));
+        app.MapGet("/api/v1/file", (HttpContext context) =>
+        {
+            if (!IsAuthorizedReceiver(context))
+                return (IResult)Results.Conflict(new { error = "transfer_not_armed" });
+            return Results.File(file.FullName, "application/octet-stream", file.Name, enableRangeProcessing: true);
+        });
 
         await app.StartAsync();
         _app = app;
@@ -302,6 +340,8 @@ internal sealed class SenderHost : IAsyncDisposable
 
     public async Task StopAsync()
     {
+        _transferArmed = false;
+        _allowedReceiverAddress = null;
         if (_cancellation is not null)
         {
             await _cancellation.CancelAsync();
