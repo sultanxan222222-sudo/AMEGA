@@ -60,7 +60,7 @@ internal sealed class SenderHost : IAsyncDisposable
             throw new FileNotFoundException("Selected package no longer exists.", selectedFile);
 
         var offer = new TransferOffer(
-            "amega", 1, "transfer_offer", Guid.NewGuid().ToString("D"),
+            "amega", 1, "transfer_offer", sha256,
             _senderId, file.Name, file.Length,
             Path.GetExtension(file.Name).Equals(".pkg", StringComparison.OrdinalIgnoreCase) ? "pkg" : "test_file",
             sha256, DateTimeOffset.UtcNow);
