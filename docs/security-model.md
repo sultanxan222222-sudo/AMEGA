@@ -4,6 +4,17 @@
 
 The first target is a private home LAN, but Wi-Fi networks can contain untrusted devices. A discovery beacon is visible to nearby network participants and must be treated as public information.
 
+## Implemented in transfer 0.3.0
+
+- The Windows sender does not expose the file until the user presses Send.
+- The sender restricts the offer and file endpoint to the IPv4 address of the PS4 selected in the discovery list.
+- The PS4 requires the user to press Cross before requesting file data.
+- Received filenames are sanitized and files are written below /data/AMEGA/Received.
+- A full-file SHA-256 comparison is required before the .part file is renamed to a completed file.
+- Interrupted data remains in a .part file and is resumed with a Range request.
+
+This IP-address restriction is a prototype access control, not cryptographic authentication. It is not sufficient against another device that can spoof or share the same local network identity.
+
 ## Required controls
 
 1. **Explicit consent:** no file starts transferring until the PS4 user accepts the offer. Installation always requires a separate confirmation.
@@ -21,6 +32,10 @@ The first target is a private home LAN, but Wi-Fi networks can contain untrusted
 
 AMEGA is not a remote-control tool, does not bypass PS4 licensing or security, and does not install packages without the user's consent. It does not require a cloud relay.
 
+## Current transport warning
+
+The 0.3.0 transfer uses plain HTTP on TCP 38471. Do not use it on public, guest, or otherwise untrusted Wi-Fi. The sender limits requests by the selected receiver's observed IPv4 address, but there is no pairing token or encryption yet.
+
 ## Release gate
 
-A public/release build must not be labeled secure until authenticated transport, pairing rate limits, path validation, disk-space checks, and negative security tests have been implemented and reviewed.
+A public/release build must not be labeled secure until authenticated transport, cryptographic pairing, rate limits, strict path validation, disk-space checks, and negative security tests have been implemented and reviewed.
