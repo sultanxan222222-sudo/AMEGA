@@ -721,8 +721,9 @@ int main(int argc, char* argv[])
             std::string savedPath, error;
             bool ok = amega_transfer::downloadFile(g_senders[g_selected].ip,
                 g_senders[g_selected].httpPort, g_offer,
-                [](uint64_t bytes) {
+                [&](uint64_t bytes) {
                     g_downloadBytes = bytes;
+                    drawUi(renderer, window, surfaceRenderer);
                 }, savedPath, error);
             g_downloading = false;
             if (ok) {
